@@ -7,3 +7,7 @@
 
 # Fichiers temporaires
 *.tmp
+
+# Sorties de test locales
+/out/
+*.dxf
