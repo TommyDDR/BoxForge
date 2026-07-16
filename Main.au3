@@ -1,5 +1,6 @@
 #include <GUIConstantsEx.au3>
 #include "App.au3"
+#include "Project.au3"
 #include "Camera.au3"
 #include "Input.au3"
 #include "UI.au3"
@@ -18,8 +19,16 @@
 Main()
 
 Func Main()
+	; Nouveau projet : la boîte par défaut est créée automatiquement.
+	Project_New()
+
 	UI_Create()
+	UI_RefreshBoxInputs()
+
+	; Caméra : cadre la boîte dans le canvas.
 	Camera_SetViewport(UI_GetCanvasW(), UI_GetCanvasH())
+	Camera_FitRect(0, 0, Project_BoxGet($BOX_WIDTH), Project_BoxGet($BOX_LENGTH))
+
 	Renderer_Init(UI_GetCanvasHwnd(), UI_GetCanvasW(), UI_GetCanvasH())
 	Input_Init()
 	App_InvalidateView()
@@ -36,6 +45,10 @@ Func Main_Loop()
 		Switch $iMsg
 			Case $GUI_EVENT_CLOSE
 				ExitLoop
+			Case 0
+				; rien à faire
+			Case Else
+				UI_HandleGuiEvent($iMsg)
 		EndSwitch
 
 		; --- Redimensionnement en attente ? (posé par WM_SIZE) ---

@@ -3,6 +3,7 @@
 #include <WindowsConstants.au3>
 #include <WinAPI.au3>
 #include "App.au3"
+#include "Project.au3"
 
 ; =============================================================================
 ; UI.au3 — Fenêtre principale et disposition des zones (niveau 4 : UI).
@@ -50,6 +51,10 @@ Global $g_iUiCanvasH = 1
 ; --- Drapeau "la disposition doit être réappliquée" (posé par WM_SIZE) ---
 Global $g_bUiLayoutPending = False
 
+; --- Contrôles du panneau Propriétés : section Boîte ---
+Global $g_aidUiBoxInputs[$BOX_FIELD_COUNT]
+Global $g_idUiBtnApplyBox = 0
+
 ; -----------------------------------------------------------------------------
 ; Création de la fenêtre principale et de ses trois zones.
 ; -----------------------------------------------------------------------------
@@ -92,10 +97,69 @@ Func UI_CreatePanelRight()
 	GUICtrlSetBkColor($idTitle, $GUI_BKCOLOR_TRANSPARENT)
 	GUICtrlSetFont($idTitle, 10, 700)
 
-	Local $idEmpty = GUICtrlCreateLabel("(aucune sélection)", 12, 38, $UI_PANEL_RIGHT_W - 24, 18)
-	GUICtrlSetColor($idEmpty, $UI_COLOR_TEXT_DIM)
-	GUICtrlSetBkColor($idEmpty, $GUI_BKCOLOR_TRANSPARENT)
+	UI_CreateBoxSection(42)
 EndFunc   ;==>UI_CreatePanelRight
+
+; -----------------------------------------------------------------------------
+; Section "Boîte" du panneau Propriétés : les 6 champs modifiables + Appliquer.
+; Création générique pilotée par un tableau de libellés indexé comme la
+; structure Boîte (aucun code dupliqué par champ).
+; -----------------------------------------------------------------------------
+Func UI_CreateBoxSection($iYStart)
+	Local $idSection = GUICtrlCreateLabel("Boîte", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18)
+	GUICtrlSetColor($idSection, $UI_COLOR_TEXT)
+	GUICtrlSetBkColor($idSection, $GUI_BKCOLOR_TRANSPARENT)
+	GUICtrlSetFont($idSection, 9, 700)
+
+	; Libellés indexés EXACTEMENT comme les champs de la structure Boîte.
+	Local $aLabels[$BOX_FIELD_COUNT]
+	$aLabels[$BOX_WIDTH] = "Largeur X (mm)"
+	$aLabels[$BOX_LENGTH] = "Longueur Y (mm)"
+	$aLabels[$BOX_HEIGHT] = "Hauteur (mm)"
+	$aLabels[$BOX_THICKNESS] = "Épaisseur (mm)"
+	$aLabels[$BOX_FINGER_LEN] = "Créneau : long. (mm)"
+	$aLabels[$BOX_FINGER_SPACING] = "Créneau : espac. (mm)"
+
+	Local $iY = $iYStart + 26
+	For $i = 0 To $BOX_FIELD_COUNT - 1
+		Local $idLabel = GUICtrlCreateLabel($aLabels[$i], 12, $iY + 3, 136, 18)
+		GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
+		GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
+		$g_aidUiBoxInputs[$i] = GUICtrlCreateInput("", 156, $iY, 96, 22)
+		$iY += 28
+	Next
+
+	$g_idUiBtnApplyBox = GUICtrlCreateButton("Appliquer", 156, $iY + 4, 96, 26)
+EndFunc   ;==>UI_CreateBoxSection
+
+; Recharge les champs depuis le modèle (source de vérité : le métier).
+Func UI_RefreshBoxInputs()
+	For $i = 0 To $BOX_FIELD_COUNT - 1
+		GUICtrlSetData($g_aidUiBoxInputs[$i], Project_BoxGet($i))
+	Next
+EndFunc   ;==>UI_RefreshBoxInputs
+
+; Applique les saisies au modèle : chaque champ passe par la validation
+; métier ; les valeurs refusées sont simplement réaffichées telles quelles.
+Func UI_ApplyBoxInputs()
+	For $i = 0 To $BOX_FIELD_COUNT - 1
+		Project_BoxSet($i, Number(GUICtrlRead($g_aidUiBoxInputs[$i])))
+	Next
+	UI_RefreshBoxInputs() ; réaffiche les valeurs réellement acceptées
+	App_InvalidateView()
+EndFunc   ;==>UI_ApplyBoxInputs
+
+; -----------------------------------------------------------------------------
+; Dispatch des événements de contrôles (appelé par la boucle principale).
+; Retourne True si l'événement a été consommé.
+; -----------------------------------------------------------------------------
+Func UI_HandleGuiEvent($iMsg)
+	If $iMsg = $g_idUiBtnApplyBox Then
+		UI_ApplyBoxInputs()
+		Return True
+	EndIf
+	Return False
+EndFunc   ;==>UI_HandleGuiEvent
 
 ; -----------------------------------------------------------------------------
 ; Panneau du bas : Layers (contenu réel à l'étape "Layers").

@@ -5,6 +5,7 @@
 #include <WindowsConstants.au3>
 #include "App.au3"
 #include "Camera.au3"
+#include "Project.au3"
 
 ; =============================================================================
 ; Renderer.au3 — Chaîne de rendu GDI+ (niveau 3 : affichage).
@@ -30,6 +31,9 @@ Global Const $RDR_COLOR_ACCENT     = 0xFF4C8DFF ; éléments de repère
 Global Const $RDR_COLOR_GRID_MINOR = 0xFF1E2126 ; grille fine
 Global Const $RDR_COLOR_GRID_MAJOR = 0xFF272B33 ; grille principale (×10)
 Global Const $RDR_COLOR_AXIS       = 0xFF3A4356 ; axes X=0 / Y=0
+Global Const $RDR_COLOR_WALL       = 0xFF4A4238 ; parois de la boîte (bois sombre)
+Global Const $RDR_COLOR_INTERIOR   = 0xFF23252B ; fond intérieur de la boîte
+Global Const $RDR_COLOR_BOX_LINE   = 0xFFA8865E ; contours de la boîte
 
 ; --- Grille : espacement écran minimal d'une ligne fine (pixels) ---
 Global Const $RDR_GRID_MIN_SPACING_PX = 10
@@ -56,6 +60,9 @@ Global $g_hRdrPenAccent     = 0
 Global $g_hRdrPenGridMinor  = 0
 Global $g_hRdrPenGridMajor  = 0
 Global $g_hRdrPenAxis       = 0
+Global $g_hRdrBrushWall     = 0
+Global $g_hRdrBrushInterior = 0
+Global $g_hRdrPenBoxLine    = 0
 
 ; --- Registre de disposers (cf. pratiques §11) ---
 Global $g_aRdrDisposers[0]
@@ -146,11 +153,26 @@ Func Renderer_CreateSharedObjects()
 	$g_hRdrPenGridMinor = _GDIPlus_PenCreate($RDR_COLOR_GRID_MINOR)
 	$g_hRdrPenGridMajor = _GDIPlus_PenCreate($RDR_COLOR_GRID_MAJOR)
 	$g_hRdrPenAxis = _GDIPlus_PenCreate($RDR_COLOR_AXIS)
+	$g_hRdrBrushWall = _GDIPlus_BrushCreateSolid($RDR_COLOR_WALL)
+	$g_hRdrBrushInterior = _GDIPlus_BrushCreateSolid($RDR_COLOR_INTERIOR)
+	$g_hRdrPenBoxLine = _GDIPlus_PenCreate($RDR_COLOR_BOX_LINE)
 
 	Renderer_RegisterDisposer("Renderer_DisposeSharedObjects")
 EndFunc   ;==>Renderer_CreateSharedObjects
 
 Func Renderer_DisposeSharedObjects()
+	If $g_hRdrPenBoxLine <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenBoxLine)
+		$g_hRdrPenBoxLine = 0
+	EndIf
+	If $g_hRdrBrushInterior <> 0 Then
+		_GDIPlus_BrushDispose($g_hRdrBrushInterior)
+		$g_hRdrBrushInterior = 0
+	EndIf
+	If $g_hRdrBrushWall <> 0 Then
+		_GDIPlus_BrushDispose($g_hRdrBrushWall)
+		$g_hRdrBrushWall = 0
+	EndIf
 	If $g_hRdrPenAxis <> 0 Then
 		_GDIPlus_PenDispose($g_hRdrPenAxis)
 		$g_hRdrPenAxis = 0
@@ -210,6 +232,7 @@ Func Renderer_Frame()
 	_GDIPlus_GraphicsClear($g_hRdrGfx, $RDR_COLOR_BG)
 
 	Renderer_DrawGrid()
+	Renderer_DrawBox()
 	Renderer_DrawHud()
 
 	Renderer_Present()
@@ -270,6 +293,37 @@ Func Renderer_DrawGrid()
 		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, 0, $iAxisY, $g_iRdrW, $iAxisY, $g_hRdrPenAxis)
 	EndIf
 EndFunc   ;==>Renderer_DrawGrid
+
+; -----------------------------------------------------------------------------
+; Helper générique : rectangle monde (mm) → écran, rempli et/ou contouré.
+; Chaque bord est snappé individuellement par le même chemin d'arrondi que
+; tout le reste du rendu : les rectangles adjacents coïncident au pixel près.
+; Passer 0 pour ignorer le brush ou le pen.
+; -----------------------------------------------------------------------------
+Func Renderer_DrawWorldRect($fXmm, $fYmm, $fWmm, $fHmm, $hBrush, $hPen)
+	Local $iX0 = Camera_WorldToScreenX($fXmm)
+	Local $iY0 = Camera_WorldToScreenY($fYmm)
+	Local $iX1 = Camera_WorldToScreenX($fXmm + $fWmm)
+	Local $iY1 = Camera_WorldToScreenY($fYmm + $fHmm)
+	If $hBrush <> 0 Then _GDIPlus_GraphicsFillRect($g_hRdrGfx, $iX0, $iY0, $iX1 - $iX0, $iY1 - $iY0, $hBrush)
+	If $hPen <> 0 Then _GDIPlus_GraphicsDrawRect($g_hRdrGfx, $iX0, $iY0, $iX1 - $iX0, $iY1 - $iY0, $hPen)
+EndFunc   ;==>Renderer_DrawWorldRect
+
+; -----------------------------------------------------------------------------
+; Boîte : parois pleines entre le rectangle extérieur et l'intérieur.
+; Le renderer ne fait que LIRE le modèle (aucune logique métier).
+; -----------------------------------------------------------------------------
+Func Renderer_DrawBox()
+	Local $fW = Project_BoxGet($BOX_WIDTH)
+	Local $fL = Project_BoxGet($BOX_LENGTH)
+
+	; Rectangle extérieur rempli (couleur parois) puis intérieur par-dessus :
+	; la bande restante visible EST la paroi, sans calcul de 4 rectangles.
+	Renderer_DrawWorldRect(0, 0, $fW, $fL, $g_hRdrBrushWall, 0)
+	Renderer_DrawWorldRect(Box_InteriorX($g_aPrjBox), Box_InteriorY($g_aPrjBox), _
+			Box_InteriorW($g_aPrjBox), Box_InteriorH($g_aPrjBox), $g_hRdrBrushInterior, $g_hRdrPenBoxLine)
+	Renderer_DrawWorldRect(0, 0, $fW, $fL, 0, $g_hRdrPenBoxLine)
+EndFunc   ;==>Renderer_DrawBox
 
 ; -----------------------------------------------------------------------------
 ; HUD : informations d'état en haut à gauche du canvas (zoom, pas de grille).
