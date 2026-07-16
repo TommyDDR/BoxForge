@@ -24,6 +24,7 @@ Func Main()
 
 	UI_Create()
 	UI_RefreshBoxInputs()
+	UI_RefreshLayerInputs()
 
 	; Caméra : cadre la boîte dans le canvas.
 	Camera_SetViewport(UI_GetCanvasW(), UI_GetCanvasH())
