@@ -176,7 +176,10 @@ Func Input_OnLButtonDown($hWnd, $iMsg, $wParam, $lParam)
 		Local $iOrient = (BitAND($wParam, $INP_MK_CONTROL) <> 0) ? $SEP_ORIENT_H : $SEP_ORIENT_V
 		Local $bGlobal = (BitAND($wParam, $INP_MK_SHIFT) <> 0)
 		$iId = Metier_CreateSeparator($fWx, $fWy, $iOrient, $bGlobal, UI_GetActiveLayer())
-		If $iId <> -1 Then App_InvalidateView() ; le modèle a changé, quoi qu'il arrive à la sélection
+		If $iId <> -1 Then
+			UI_MarkProjectModified()
+			App_InvalidateView() ; le modèle a changé, quoi qu'il arrive à la sélection
+		EndIf
 	EndIf
 
 	Input_ApplySelection($iId)
@@ -232,10 +235,7 @@ Func Input_PollKeys()
 	Local $bDel = _IsPressed($INP_VK_DELETE, $g_hInpUser32)
 	If $bDel And Not $g_bInpPrevDel And Selection_HasSelection() Then
 		If _WinAPI_GetClassName(_WinAPI_GetFocus()) <> "Edit" Then
-			Metier_DeleteSeparator(Selection_GetId())
-			Selection_Clear()
-			UI_RefreshSeparatorSection()
-			App_InvalidateView()
+			UI_DeleteSelectedSeparator() ; même chemin que le bouton Supprimer
 		EndIf
 	EndIf
 	$g_bInpPrevDel = $bDel
@@ -271,6 +271,7 @@ Func Input_OnMouseMove($hWnd, $iMsg, $wParam, $lParam)
 					 ? Camera_ScreenToWorldX($iX) : Camera_ScreenToWorldY($iY)
 			If Metier_MoveSeparator($g_iInpDragSepId, $fCursor - $g_fInpDragGrab) Then
 				UI_RefreshSeparatorPosition() ; maj légère : position + longueur
+				UI_MarkProjectModified()
 				App_InvalidateView()
 			EndIf
 		EndIf

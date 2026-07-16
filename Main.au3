@@ -48,12 +48,16 @@ Func Main_Loop()
 		Local $iMsg = GUIGetMsg()
 		Switch $iMsg
 			Case $GUI_EVENT_CLOSE
-				ExitLoop
+				; Fermeture (croix) : confirmation si modifications non enregistrées.
+				If UI_ConfirmDiscard() Then ExitLoop
 			Case 0
 				; rien à faire
 			Case Else
 				UI_HandleGuiEvent($iMsg)
 		EndSwitch
+
+		; Fermeture demandée par le menu Quitter (déjà confirmée).
+		If UI_ConsumeQuitRequested() Then ExitLoop
 
 		; --- Redimensionnement en attente ? (posé par WM_SIZE) ---
 		If UI_ConsumeLayoutPending() Then

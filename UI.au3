@@ -7,10 +7,14 @@
 #include <Misc.au3>
 #include <ComboConstants.au3>
 #include <GuiComboBox.au3>
+#include <MsgBoxConstants.au3>
+#include <FileConstants.au3>
 #include "App.au3"
 #include "Project.au3"
 #include "Zones.au3"
 #include "Selection.au3"
+#include "Camera.au3"
+#include "ProjectIO.au3"
 
 ; =============================================================================
 ; UI.au3 — Fenêtre principale et disposition des zones (niveau 4 : UI).
@@ -90,6 +94,18 @@ Global $g_aidUiLayerItems[$LAYERS_COUNT]
 ; --- Layer actif (état d'édition UI : layer des futurs séparateurs) ---
 Global $g_iUiActiveLayer = 0
 
+; --- Menu principal ---
+Global $g_idUiMenuNew    = 0
+Global $g_idUiMenuOpen   = 0
+Global $g_idUiMenuSave   = 0
+Global $g_idUiMenuSaveAs = 0
+Global $g_idUiMenuQuit   = 0
+Global $g_idUiMenuFit    = 0
+Global $g_idUiMenuDxf    = 0
+
+; --- Demande de fermeture émise par le menu Quitter ---
+Global $g_bUiQuitRequested = False
+
 ; -----------------------------------------------------------------------------
 ; Création de la fenêtre principale et de ses trois zones.
 ; -----------------------------------------------------------------------------
@@ -99,6 +115,7 @@ Func UI_Create()
 	$g_hUiMainGui = GUICreate($APP_NAME & " " & $APP_VERSION, $UI_MAIN_START_W, $UI_MAIN_START_H, _
 			-1, -1, BitOR($WS_OVERLAPPEDWINDOW, $WS_CLIPCHILDREN))
 	GUISetBkColor($UI_COLOR_MAIN_BG, $g_hUiMainGui)
+	UI_CreateMenus()
 
 	; Zone de dessin : GUI enfant nue, entièrement repeinte par le renderer.
 	$g_hUiCanvasGui = GUICreate("", 100, 100, 0, 0, $WS_CHILD, 0, $g_hUiMainGui)
@@ -118,7 +135,127 @@ Func UI_Create()
 	GUISetState(@SW_SHOW, $g_hUiPanelRightGui)
 	GUISetState(@SW_SHOW, $g_hUiPanelBottomGui)
 	GUISetState(@SW_SHOW, $g_hUiMainGui)
+
+	UI_UpdateTitle()
 EndFunc   ;==>UI_Create
+
+; -----------------------------------------------------------------------------
+; Menu principal : Fichier / Affichage / Génération.
+; (La génération DXF est câblée à l'étape suivante : entrée désactivée.)
+; -----------------------------------------------------------------------------
+Func UI_CreateMenus()
+	Local $idMenuFile = GUICtrlCreateMenu("&Fichier")
+	$g_idUiMenuNew = GUICtrlCreateMenuItem("Nouveau", $idMenuFile)
+	$g_idUiMenuOpen = GUICtrlCreateMenuItem("Ouvrir…", $idMenuFile)
+	GUICtrlCreateMenuItem("", $idMenuFile) ; séparateur
+	$g_idUiMenuSave = GUICtrlCreateMenuItem("Enregistrer", $idMenuFile)
+	$g_idUiMenuSaveAs = GUICtrlCreateMenuItem("Enregistrer sous…", $idMenuFile)
+	GUICtrlCreateMenuItem("", $idMenuFile)
+	$g_idUiMenuQuit = GUICtrlCreateMenuItem("Quitter", $idMenuFile)
+
+	Local $idMenuView = GUICtrlCreateMenu("&Affichage")
+	$g_idUiMenuFit = GUICtrlCreateMenuItem("Recentrer sur la boîte", $idMenuView)
+
+	Local $idMenuGen = GUICtrlCreateMenu("&Génération")
+	$g_idUiMenuDxf = GUICtrlCreateMenuItem("Générer le DXF…", $idMenuGen)
+	GUICtrlSetState($g_idUiMenuDxf, $GUI_DISABLE) ; disponible à l'étape DXF
+EndFunc   ;==>UI_CreateMenus
+
+; -----------------------------------------------------------------------------
+; Titre de la fenêtre : application, projet courant, astérisque si modifié.
+; -----------------------------------------------------------------------------
+Func UI_UpdateTitle()
+	WinSetTitle($g_hUiMainGui, "", $APP_NAME & " " & $APP_VERSION & " — " _
+			 & ProjectIO_GetDisplayName() & (App_IsProjectModified() ? " *" : ""))
+EndFunc   ;==>UI_UpdateTitle
+
+; Signale une mutation du projet (appelé par l'UI/Input après chaque action
+; métier). Ne rafraîchit le titre qu'à la transition non-modifié → modifié.
+Func UI_MarkProjectModified()
+	If App_SetProjectModified(True) Then UI_UpdateTitle()
+EndFunc   ;==>UI_MarkProjectModified
+
+; -----------------------------------------------------------------------------
+; Confirmation avant d'abandonner des modifications non enregistrées.
+; Retourne True si l'opération peut continuer.
+; -----------------------------------------------------------------------------
+Func UI_ConfirmDiscard()
+	If Not App_IsProjectModified() Then Return True
+	Return MsgBox(BitOR($MB_YESNO, $MB_ICONWARNING, $MB_DEFBUTTON2), $APP_NAME, _
+			"Le projet comporte des modifications non enregistrées." & @CRLF & _
+			"Continuer sans enregistrer ?", 0, $g_hUiMainGui) = $IDYES
+EndFunc   ;==>UI_ConfirmDiscard
+
+; Le menu Quitter a-t-il demandé la fermeture ? (consommé par la boucle)
+Func UI_ConsumeQuitRequested()
+	If Not $g_bUiQuitRequested Then Return False
+	$g_bUiQuitRequested = False
+	Return True
+EndFunc   ;==>UI_ConsumeQuitRequested
+
+; -----------------------------------------------------------------------------
+; Resynchronise TOUTE l'interface après remplacement du projet (Nouveau/Ouvrir) :
+; panneaux, liste des layers, sélection, caméra, titre.
+; -----------------------------------------------------------------------------
+Func UI_AfterProjectReplaced()
+	Selection_Clear()
+	UI_RefreshBoxInputs()
+	UI_RefreshLayerInputs()
+	For $i = 0 To $LAYERS_COUNT - 1
+		UI_RefreshLayerRow($i)
+	Next
+	UI_RefreshSeparatorSection()
+
+	Camera_FitRect(0, 0, Project_BoxGet($BOX_WIDTH), Project_BoxGet($BOX_LENGTH))
+
+	App_SetProjectModified(False)
+	UI_UpdateTitle()
+	App_InvalidateView()
+EndFunc   ;==>UI_AfterProjectReplaced
+
+; --- Actions du menu Fichier ---------------------------------------------------
+
+Func UI_DoNew()
+	If Not UI_ConfirmDiscard() Then Return
+	Metier_NewProject()
+	ProjectIO_SetPath("")
+	UI_AfterProjectReplaced()
+EndFunc   ;==>UI_DoNew
+
+Func UI_DoOpen()
+	If Not UI_ConfirmDiscard() Then Return
+	Local $sPath = FileOpenDialog("Ouvrir un projet", "", _
+			"Projet BoxForge (*." & $IO_FILE_EXT & ")", $FD_FILEMUSTEXIST, "", $g_hUiMainGui)
+	If @error Then Return ; annulé
+
+	If Not ProjectIO_LoadFrom($sPath) Then
+		MsgBox(BitOR($MB_OK, $MB_ICONERROR), $APP_NAME, _
+				"Fichier de projet invalide ou illisible :" & @CRLF & $sPath, 0, $g_hUiMainGui)
+		Return
+	EndIf
+	UI_AfterProjectReplaced()
+EndFunc   ;==>UI_DoOpen
+
+; Enregistre le projet ($bForceDialog : "Enregistrer sous…").
+Func UI_DoSave($bForceDialog)
+	Local $sPath = ProjectIO_GetPath()
+	If $bForceDialog Or $sPath = "" Then
+		$sPath = FileSaveDialog("Enregistrer le projet", "", _
+				"Projet BoxForge (*." & $IO_FILE_EXT & ")", $FD_PATHMUSTEXIST, _
+				ProjectIO_GetDisplayName(), $g_hUiMainGui)
+		If @error Then Return ; annulé
+		; FileSaveDialog ne force pas l'extension.
+		If Not StringRegExp($sPath, "(?i)\." & $IO_FILE_EXT & "$") Then $sPath &= "." & $IO_FILE_EXT
+	EndIf
+
+	If Not ProjectIO_SaveTo($sPath) Then
+		MsgBox(BitOR($MB_OK, $MB_ICONERROR), $APP_NAME, _
+				"Impossible d'écrire le fichier :" & @CRLF & $sPath, 0, $g_hUiMainGui)
+		Return
+	EndIf
+	App_SetProjectModified(False)
+	UI_UpdateTitle()
+EndFunc   ;==>UI_DoSave
 
 ; -----------------------------------------------------------------------------
 ; Panneau de droite : Propriétés (contenu réel à l'étape "Sélection").
@@ -251,7 +388,7 @@ EndFunc   ;==>UI_RefreshSeparatorPosition
 ; acceptée est réaffichée.
 Func UI_ApplySeparatorPosition()
 	If Not Selection_HasSelection() Then Return
-	Metier_MoveSeparator(Selection_GetId(), Number(GUICtrlRead($g_idUiSepPosInput)))
+	If Metier_MoveSeparator(Selection_GetId(), Number(GUICtrlRead($g_idUiSepPosInput))) Then UI_MarkProjectModified()
 	UI_RefreshSeparatorSection()
 	App_InvalidateView()
 EndFunc   ;==>UI_ApplySeparatorPosition
@@ -272,6 +409,7 @@ Func UI_ApplySeparatorLayer()
 			Project_SepSet($i, $SEP_LAYER, $iLayer)
 		EndIf
 	Next
+	UI_MarkProjectModified()
 	App_InvalidateView()
 EndFunc   ;==>UI_ApplySeparatorLayer
 
@@ -281,6 +419,7 @@ Func UI_DeleteSelectedSeparator()
 	Metier_DeleteSeparator(Selection_GetId())
 	Selection_Clear()
 	UI_RefreshSeparatorSection()
+	UI_MarkProjectModified()
 	App_InvalidateView()
 EndFunc   ;==>UI_DeleteSelectedSeparator
 
@@ -374,6 +513,7 @@ Func UI_ApplyLayerInputs()
 	Next
 	UI_RefreshLayerInputs()
 	UI_RefreshLayerRow($g_iUiActiveLayer)
+	UI_MarkProjectModified()
 	App_InvalidateView()
 EndFunc   ;==>UI_ApplyLayerInputs
 
@@ -384,6 +524,7 @@ Func UI_PickLayerColor()
 	Project_LayerSet($g_iUiActiveLayer, $LAYER_COLOR, $iColor)
 	UI_RefreshLayerInputs()
 	UI_RefreshLayerRow($g_iUiActiveLayer)
+	UI_MarkProjectModified()
 	App_InvalidateView()
 EndFunc   ;==>UI_PickLayerColor
 
@@ -404,6 +545,7 @@ Func UI_ApplyBoxInputs()
 	Next
 	Metier_OnBoxChanged()
 	UI_RefreshBoxInputs() ; réaffiche les valeurs réellement acceptées
+	UI_MarkProjectModified()
 	App_InvalidateView()
 EndFunc   ;==>UI_ApplyBoxInputs
 
@@ -413,6 +555,25 @@ EndFunc   ;==>UI_ApplyBoxInputs
 ; -----------------------------------------------------------------------------
 Func UI_HandleGuiEvent($iMsg)
 	Switch $iMsg
+		Case $g_idUiMenuNew
+			UI_DoNew()
+			Return True
+		Case $g_idUiMenuOpen
+			UI_DoOpen()
+			Return True
+		Case $g_idUiMenuSave
+			UI_DoSave(False)
+			Return True
+		Case $g_idUiMenuSaveAs
+			UI_DoSave(True)
+			Return True
+		Case $g_idUiMenuQuit
+			If UI_ConfirmDiscard() Then $g_bUiQuitRequested = True
+			Return True
+		Case $g_idUiMenuFit
+			Camera_FitRect(0, 0, Project_BoxGet($BOX_WIDTH), Project_BoxGet($BOX_LENGTH))
+			App_InvalidateView()
+			Return True
 		Case $g_idUiBtnApplyBox
 			UI_ApplyBoxInputs()
 			Return True
