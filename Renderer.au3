@@ -4,6 +4,7 @@
 #include <WinAPIGdi.au3>
 #include <WindowsConstants.au3>
 #include "App.au3"
+#include "Camera.au3"
 
 ; =============================================================================
 ; Renderer.au3 — Chaîne de rendu GDI+ (niveau 3 : affichage).
@@ -23,9 +24,15 @@
 ; =============================================================================
 
 ; --- Couleurs de rendu (format GDI+ 0xAARRGGBB) ---
-Global Const $RDR_COLOR_BG     = 0xFF15171B ; fond du canvas
-Global Const $RDR_COLOR_TEXT   = 0xFFB8BCC4 ; texte d'information
-Global Const $RDR_COLOR_ACCENT = 0xFF4C8DFF ; éléments de repère
+Global Const $RDR_COLOR_BG         = 0xFF15171B ; fond du canvas
+Global Const $RDR_COLOR_TEXT       = 0xFFB8BCC4 ; texte d'information
+Global Const $RDR_COLOR_ACCENT     = 0xFF4C8DFF ; éléments de repère
+Global Const $RDR_COLOR_GRID_MINOR = 0xFF1E2126 ; grille fine
+Global Const $RDR_COLOR_GRID_MAJOR = 0xFF272B33 ; grille principale (×10)
+Global Const $RDR_COLOR_AXIS       = 0xFF3A4356 ; axes X=0 / Y=0
+
+; --- Grille : espacement écran minimal d'une ligne fine (pixels) ---
+Global Const $RDR_GRID_MIN_SPACING_PX = 10
 
 ; TextRenderingHint constant partout (3 = AntiAlias, cf. pratiques §3)
 Global Const $RDR_TEXT_RENDER_HINT = 3
@@ -46,6 +53,9 @@ Global $g_hRdrFontUi        = 0
 Global $g_hRdrFormatDefault = 0
 Global $g_hRdrBrushText     = 0
 Global $g_hRdrPenAccent     = 0
+Global $g_hRdrPenGridMinor  = 0
+Global $g_hRdrPenGridMajor  = 0
+Global $g_hRdrPenAxis       = 0
 
 ; --- Registre de disposers (cf. pratiques §11) ---
 Global $g_aRdrDisposers[0]
@@ -133,11 +143,26 @@ Func Renderer_CreateSharedObjects()
 	$g_hRdrFormatDefault = _GDIPlus_StringFormatCreate()
 	$g_hRdrBrushText = _GDIPlus_BrushCreateSolid($RDR_COLOR_TEXT)
 	$g_hRdrPenAccent = _GDIPlus_PenCreate($RDR_COLOR_ACCENT)
+	$g_hRdrPenGridMinor = _GDIPlus_PenCreate($RDR_COLOR_GRID_MINOR)
+	$g_hRdrPenGridMajor = _GDIPlus_PenCreate($RDR_COLOR_GRID_MAJOR)
+	$g_hRdrPenAxis = _GDIPlus_PenCreate($RDR_COLOR_AXIS)
 
 	Renderer_RegisterDisposer("Renderer_DisposeSharedObjects")
 EndFunc   ;==>Renderer_CreateSharedObjects
 
 Func Renderer_DisposeSharedObjects()
+	If $g_hRdrPenAxis <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenAxis)
+		$g_hRdrPenAxis = 0
+	EndIf
+	If $g_hRdrPenGridMajor <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenGridMajor)
+		$g_hRdrPenGridMajor = 0
+	EndIf
+	If $g_hRdrPenGridMinor <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenGridMinor)
+		$g_hRdrPenGridMinor = 0
+	EndIf
 	If $g_hRdrPenAccent <> 0 Then
 		_GDIPlus_PenDispose($g_hRdrPenAccent)
 		$g_hRdrPenAccent = 0
@@ -184,24 +209,78 @@ EndFunc   ;==>Renderer_RunDisposers
 Func Renderer_Frame()
 	_GDIPlus_GraphicsClear($g_hRdrGfx, $RDR_COLOR_BG)
 
-	Renderer_DrawPlaceholder()
+	Renderer_DrawGrid()
+	Renderer_DrawHud()
 
 	Renderer_Present()
 EndFunc   ;==>Renderer_Frame
 
-; Dessin provisoire (étape 1) : prouve que la chaîne de rendu fonctionne.
-; Sera remplacé par le dessin du modèle (boîte, séparateurs, sous-zones).
-Func Renderer_DrawPlaceholder()
-	; Croix de repère au centre du canvas.
-	Local $iCx = Int($g_iRdrW / 2), $iCy = Int($g_iRdrH / 2)
-	_GDIPlus_GraphicsDrawLine($g_hRdrGfx, $iCx - 12, $iCy, $iCx + 12, $iCy, $g_hRdrPenAccent)
-	_GDIPlus_GraphicsDrawLine($g_hRdrGfx, $iCx, $iCy - 12, $iCx, $iCy + 12, $g_hRdrPenAccent)
+; -----------------------------------------------------------------------------
+; Choix du pas de grille (mm) selon le zoom : le plus petit pas de la
+; progression 1-5-10-50-100-… dont l'espacement écran reste lisible.
+; -----------------------------------------------------------------------------
+Func Renderer_PickGridStep()
+	Local Static $aSteps[8] = [1, 5, 10, 50, 100, 500, 1000, 5000]
+	For $i = 0 To UBound($aSteps) - 1
+		If Camera_MmToPx($aSteps[$i]) >= $RDR_GRID_MIN_SPACING_PX Then Return $aSteps[$i]
+	Next
+	Return $aSteps[UBound($aSteps) - 1]
+EndFunc   ;==>Renderer_PickGridStep
 
-	; Libellé d'état en haut à gauche.
+; -----------------------------------------------------------------------------
+; Grille millimétrique adaptative + axes de l'origine.
+; Lignes fines au pas courant, lignes majeures tous les 10 pas, axes X=0/Y=0.
+; -----------------------------------------------------------------------------
+Func Renderer_DrawGrid()
+	Local $fStep = Renderer_PickGridStep()
+
+	; Bornes monde visibles.
+	Local $fLeft = Camera_ScreenToWorldX(0)
+	Local $fRight = Camera_ScreenToWorldX($g_iRdrW)
+	Local $fTop = Camera_ScreenToWorldY(0)
+	Local $fBottom = Camera_ScreenToWorldY($g_iRdrH)
+
+	Local $hPen
+
+	; Lignes verticales.
+	Local $fX = Floor($fLeft / $fStep) * $fStep
+	While $fX <= $fRight
+		Local $iPx = Camera_WorldToScreenX($fX)
+		$hPen = (Mod(Camera_RoundSigned($fX / $fStep), 10) = 0) ? $g_hRdrPenGridMajor : $g_hRdrPenGridMinor
+		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, $iPx, 0, $iPx, $g_iRdrH, $hPen)
+		$fX += $fStep
+	WEnd
+
+	; Lignes horizontales.
+	Local $fY = Floor($fTop / $fStep) * $fStep
+	While $fY <= $fBottom
+		Local $iPy = Camera_WorldToScreenY($fY)
+		$hPen = (Mod(Camera_RoundSigned($fY / $fStep), 10) = 0) ? $g_hRdrPenGridMajor : $g_hRdrPenGridMinor
+		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, 0, $iPy, $g_iRdrW, $iPy, $hPen)
+		$fY += $fStep
+	WEnd
+
+	; Axes de l'origine monde (0, 0).
+	If $fLeft <= 0 And $fRight >= 0 Then
+		Local $iAxisX = Camera_WorldToScreenX(0)
+		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, $iAxisX, 0, $iAxisX, $g_iRdrH, $g_hRdrPenAxis)
+	EndIf
+	If $fTop <= 0 And $fBottom >= 0 Then
+		Local $iAxisY = Camera_WorldToScreenY(0)
+		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, 0, $iAxisY, $g_iRdrW, $iAxisY, $g_hRdrPenAxis)
+	EndIf
+EndFunc   ;==>Renderer_DrawGrid
+
+; -----------------------------------------------------------------------------
+; HUD : informations d'état en haut à gauche du canvas (zoom, pas de grille).
+; -----------------------------------------------------------------------------
+Func Renderer_DrawHud()
+	Local $sInfo = StringFormat("zoom : %.2f px/mm   |   grille : %d mm", _
+			Camera_GetZoom(), Renderer_PickGridStep())
 	Local $tLayout = _GDIPlus_RectFCreate(10, 8, $g_iRdrW - 20, 24)
-	_GDIPlus_GraphicsDrawStringEx($g_hRdrGfx, $APP_NAME & " " & $APP_VERSION & _
-			" — étape 1 : socle de rendu", $g_hRdrFontUi, $tLayout, $g_hRdrFormatDefault, $g_hRdrBrushText)
-EndFunc   ;==>Renderer_DrawPlaceholder
+	_GDIPlus_GraphicsDrawStringEx($g_hRdrGfx, $sInfo, $g_hRdrFontUi, $tLayout, _
+			$g_hRdrFormatDefault, $g_hRdrBrushText)
+EndFunc   ;==>Renderer_DrawHud
 
 ; Présentation : UN SEUL blit par frame, SRCCOPY, plein canvas (§1, §2).
 Func Renderer_Present()

@@ -1,5 +1,7 @@
 #include <GUIConstantsEx.au3>
 #include "App.au3"
+#include "Camera.au3"
+#include "Input.au3"
 #include "UI.au3"
 #include "Renderer.au3"
 
@@ -17,7 +19,9 @@ Main()
 
 Func Main()
 	UI_Create()
+	Camera_SetViewport(UI_GetCanvasW(), UI_GetCanvasH())
 	Renderer_Init(UI_GetCanvasHwnd(), UI_GetCanvasW(), UI_GetCanvasH())
+	Input_Init()
 	App_InvalidateView()
 
 	Main_Loop()
@@ -37,6 +41,7 @@ Func Main_Loop()
 		; --- Redimensionnement en attente ? (posé par WM_SIZE) ---
 		If UI_ConsumeLayoutPending() Then
 			UI_ApplyLayout()
+			Camera_SetViewport(UI_GetCanvasW(), UI_GetCanvasH())
 			Renderer_Resize(UI_GetCanvasW(), UI_GetCanvasH())
 			App_InvalidateView()
 		EndIf
