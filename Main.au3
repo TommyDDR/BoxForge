@@ -38,6 +38,7 @@ Func Main()
 
 	Main_Loop()
 
+	Input_Shutdown()
 	Renderer_Shutdown()
 EndFunc   ;==>Main
 
@@ -61,6 +62,9 @@ Func Main_Loop()
 			Renderer_Resize(UI_GetCanvasW(), UI_GetCanvasH())
 			App_InvalidateView()
 		EndIf
+
+		; --- Clavier : Suppr (suppression) / Échap (désélection) ---
+		Input_PollKeys()
 
 		; --- Rendu uniquement si la vue a changé ---
 		If App_ConsumeViewDirty() Then Renderer_Frame()

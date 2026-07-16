@@ -5,9 +5,12 @@
 #include <ListViewConstants.au3>
 #include <GuiListView.au3>
 #include <Misc.au3>
+#include <ComboConstants.au3>
+#include <GuiComboBox.au3>
 #include "App.au3"
 #include "Project.au3"
 #include "Zones.au3"
+#include "Selection.au3"
 
 ; =============================================================================
 ; UI.au3 — Fenêtre principale et disposition des zones (niveau 4 : UI).
@@ -68,6 +71,17 @@ Global $g_idUiLayerColorBtn     = 0
 Global $g_idUiLayerColorSwatch  = 0
 Global $g_idUiBtnApplyLayer     = 0
 
+; --- Contrôles du panneau Propriétés : section Séparateur sélectionné ---
+; Visible uniquement quand un séparateur est sélectionné. Les contrôles sont
+; recensés dans $g_aidUiSepCtrls pour être montrés/masqués d'un bloc.
+Global $g_aidUiSepCtrls[0]
+Global $g_idUiSepTitle      = 0 ; "Séparateur #n (vertical)"
+Global $g_idUiSepPosValue   = 0 ; position (lecture seule à cette étape)
+Global $g_idUiSepLenValue   = 0 ; longueur (dérivée, lecture seule)
+Global $g_idUiSepLayerCombo = 0 ; layer du séparateur (éditable)
+Global $g_idUiSepGroupValue = 0 ; groupe SHIFT éventuel
+Global $g_idUiBtnSepDelete  = 0
+
 ; --- Panneau du bas : liste des layers ---
 Global $g_idUiLayerList = 0
 Global $g_aidUiLayerItems[$LAYERS_COUNT]
@@ -119,7 +133,125 @@ Func UI_CreatePanelRight()
 
 	UI_CreateBoxSection(42)
 	UI_CreateLayerSection(300)
+	UI_CreateSeparatorSection(524)
 EndFunc   ;==>UI_CreatePanelRight
+
+; -----------------------------------------------------------------------------
+; Section "Séparateur" du panneau Propriétés (cahier des charges : position,
+; layer, orientation, longueur, identifiant, lien de groupe SHIFT).
+; Créée masquée : UI_RefreshSeparatorSection la montre quand une sélection
+; existe. Tous les contrôles sont recensés pour le masquage en bloc.
+; -----------------------------------------------------------------------------
+Func UI_CreateSeparatorSection($iYStart)
+	$g_idUiSepTitle = GUICtrlCreateLabel("", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18)
+	GUICtrlSetColor($g_idUiSepTitle, $UI_COLOR_TEXT)
+	GUICtrlSetBkColor($g_idUiSepTitle, $GUI_BKCOLOR_TRANSPARENT)
+	GUICtrlSetFont($g_idUiSepTitle, 9, 700)
+	UI_TrackSepCtrl($g_idUiSepTitle)
+
+	Local $iY = $iYStart + 26
+	$g_idUiSepPosValue = UI_CreateSepValueRow("Position (mm)", $iY)
+	$g_idUiSepLenValue = UI_CreateSepValueRow("Longueur (mm)", $iY)
+	$g_idUiSepGroupValue = UI_CreateSepValueRow("Groupe", $iY)
+
+	; Layer du séparateur : liste déroulante des 30 layers.
+	Local $idLabel = GUICtrlCreateLabel("Layer", 12, $iY + 3, 136, 18)
+	GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
+	GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
+	UI_TrackSepCtrl($idLabel)
+	$g_idUiSepLayerCombo = GUICtrlCreateCombo("", 156, $iY, 96, 22, BitOR($CBS_DROPDOWNLIST, $WS_VSCROLL))
+	Local $sItems = ""
+	For $i = 0 To $LAYERS_COUNT - 1
+		$sItems &= ($i > 0 ? "|" : "") & Layers_Name($i)
+	Next
+	GUICtrlSetData($g_idUiSepLayerCombo, $sItems)
+	UI_TrackSepCtrl($g_idUiSepLayerCombo)
+	$iY += 28
+
+	$g_idUiBtnSepDelete = GUICtrlCreateButton("Supprimer", 156, $iY + 4, 96, 26)
+	UI_TrackSepCtrl($g_idUiBtnSepDelete)
+
+	UI_RefreshSeparatorSection() ; masque la section (aucune sélection au départ)
+EndFunc   ;==>UI_CreateSeparatorSection
+
+; Crée une rangée "libellé + valeur en lecture seule" de la section Séparateur
+; et avance $iY. Retourne l'id du label de valeur.
+Func UI_CreateSepValueRow($sLabel, ByRef $iY)
+	Local $idLabel = GUICtrlCreateLabel($sLabel, 12, $iY + 3, 136, 18)
+	GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
+	GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
+	UI_TrackSepCtrl($idLabel)
+
+	Local $idValue = GUICtrlCreateLabel("", 156, $iY + 3, 96, 18)
+	GUICtrlSetColor($idValue, $UI_COLOR_TEXT)
+	GUICtrlSetBkColor($idValue, $GUI_BKCOLOR_TRANSPARENT)
+	UI_TrackSepCtrl($idValue)
+
+	$iY += 28
+	Return $idValue
+EndFunc   ;==>UI_CreateSepValueRow
+
+; Recense un contrôle de la section Séparateur (masquage/affichage en bloc).
+Func UI_TrackSepCtrl($idCtrl)
+	ReDim $g_aidUiSepCtrls[UBound($g_aidUiSepCtrls) + 1]
+	$g_aidUiSepCtrls[UBound($g_aidUiSepCtrls) - 1] = $idCtrl
+EndFunc   ;==>UI_TrackSepCtrl
+
+; -----------------------------------------------------------------------------
+; Synchronise la section Séparateur avec la sélection courante :
+; masquée si aucune sélection, sinon remplie depuis le modèle.
+; -----------------------------------------------------------------------------
+Func UI_RefreshSeparatorSection()
+	Local $iRow = Selection_HasSelection() ? Project_SepFindById(Selection_GetId()) : -1
+
+	Local $iState = ($iRow = -1) ? $GUI_HIDE : $GUI_SHOW
+	For $i = 0 To UBound($g_aidUiSepCtrls) - 1
+		GUICtrlSetState($g_aidUiSepCtrls[$i], $iState)
+	Next
+	If $iRow = -1 Then Return
+
+	GUICtrlSetData($g_idUiSepTitle, StringFormat("Séparateur #%d (%s)", _
+			Project_SepGet($iRow, $SEP_ID), Separator_OrientName(Project_SepGet($iRow, $SEP_ORIENT))))
+	GUICtrlSetData($g_idUiSepPosValue, StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)))
+	GUICtrlSetData($g_idUiSepLenValue, StringFormat("%.1f", Project_SepLength($iRow)))
+
+	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
+	GUICtrlSetData($g_idUiSepGroupValue, ($iGroup = $SEP_NO_GROUP) ? "aucun" _
+			 : StringFormat("G%d (%d segments)", $iGroup, Project_SepGroupSize($iGroup)))
+
+	; Sélection du layer courant dans la liste déroulante.
+	; (PAS GUICtrlSetData : sur une combo, il AJOUTERAIT un doublon.)
+	_GUICtrlComboBox_SelectString(GUICtrlGetHandle($g_idUiSepLayerCombo), _
+			Layers_Name(Project_SepGet($iRow, $SEP_LAYER)))
+EndFunc   ;==>UI_RefreshSeparatorSection
+
+; Applique le layer choisi dans la liste au séparateur sélectionné — et à tout
+; son groupe : les segments liés se comportent comme un seul objet.
+Func UI_ApplySeparatorLayer()
+	Local $iRow = Selection_HasSelection() ? Project_SepFindById(Selection_GetId()) : -1
+	If $iRow = -1 Then Return
+
+	; "Layer NN" → NN (index numérique).
+	Local $iLayer = Number(StringTrimLeft(GUICtrlRead($g_idUiSepLayerCombo), 6))
+	If $iLayer < 0 Or $iLayer >= $LAYERS_COUNT Then Return
+
+	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
+	For $i = 0 To Project_SepCount() - 1
+		If $i = $iRow Or ($iGroup <> $SEP_NO_GROUP And Project_SepGet($i, $SEP_GROUP) = $iGroup) Then
+			Project_SepSet($i, $SEP_LAYER, $iLayer)
+		EndIf
+	Next
+	App_InvalidateView()
+EndFunc   ;==>UI_ApplySeparatorLayer
+
+; Supprime le séparateur sélectionné (le groupe entier suit — règle métier).
+Func UI_DeleteSelectedSeparator()
+	If Not Selection_HasSelection() Then Return
+	Metier_DeleteSeparator(Selection_GetId())
+	Selection_Clear()
+	UI_RefreshSeparatorSection()
+	App_InvalidateView()
+EndFunc   ;==>UI_DeleteSelectedSeparator
 
 ; -----------------------------------------------------------------------------
 ; Section "Boîte" du panneau Propriétés : les 6 champs modifiables + Appliquer.
@@ -258,6 +390,12 @@ Func UI_HandleGuiEvent($iMsg)
 			Return True
 		Case $g_idUiLayerColorBtn
 			UI_PickLayerColor()
+			Return True
+		Case $g_idUiSepLayerCombo
+			UI_ApplySeparatorLayer()
+			Return True
+		Case $g_idUiBtnSepDelete
+			UI_DeleteSelectedSeparator()
 			Return True
 		Case $g_idUiLayerList
 			; Clic dans la liste : suit la sélection courante.

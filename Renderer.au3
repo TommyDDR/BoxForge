@@ -7,6 +7,7 @@
 #include "Camera.au3"
 #include "Project.au3"
 #include "Zones.au3"
+#include "Selection.au3"
 
 ; =============================================================================
 ; Renderer.au3 — Chaîne de rendu GDI+ (niveau 3 : affichage).
@@ -38,6 +39,9 @@ Global Const $RDR_COLOR_BOX_LINE   = 0xFFA8865E ; contours de la boîte
 
 ; Alpha plein appliqué aux couleurs de layer (stockées en 0xRRGGBB au modèle).
 Global Const $RDR_ALPHA_OPAQUE = 0xFF000000
+
+Global Const $RDR_COLOR_SELECT = 0xFFFFA030 ; contour du séparateur sélectionné
+Global Const $RDR_COLOR_HOVER  = 0x14FFFFFF ; voile de la sous-zone survolée
 
 ; --- Grille : espacement écran minimal d'une ligne fine (pixels) ---
 Global Const $RDR_GRID_MIN_SPACING_PX = 10
@@ -74,6 +78,10 @@ Global $g_hRdrPenBoxLine    = 0
 ; de cache à gérer quand la couleur d'un layer change.
 Global $g_hRdrBrushSep   = 0
 Global $g_hRdrPenSepEdge = 0
+
+; Sélection et survol.
+Global $g_hRdrPenSelect  = 0 ; contour épais du séparateur sélectionné
+Global $g_hRdrBrushHover = 0 ; voile translucide de la sous-zone survolée
 
 ; --- Registre de disposers (cf. pratiques §11) ---
 Global $g_aRdrDisposers[0]
@@ -169,11 +177,21 @@ Func Renderer_CreateSharedObjects()
 	$g_hRdrPenBoxLine = _GDIPlus_PenCreate($RDR_COLOR_BOX_LINE)
 	$g_hRdrBrushSep = _GDIPlus_BrushCreateSolid(0xFF808080)
 	$g_hRdrPenSepEdge = _GDIPlus_PenCreate(0xFF404040)
+	$g_hRdrPenSelect = _GDIPlus_PenCreate($RDR_COLOR_SELECT, 2)
+	$g_hRdrBrushHover = _GDIPlus_BrushCreateSolid($RDR_COLOR_HOVER)
 
 	Renderer_RegisterDisposer("Renderer_DisposeSharedObjects")
 EndFunc   ;==>Renderer_CreateSharedObjects
 
 Func Renderer_DisposeSharedObjects()
+	If $g_hRdrBrushHover <> 0 Then
+		_GDIPlus_BrushDispose($g_hRdrBrushHover)
+		$g_hRdrBrushHover = 0
+	EndIf
+	If $g_hRdrPenSelect <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenSelect)
+		$g_hRdrPenSelect = 0
+	EndIf
 	If $g_hRdrPenSepEdge <> 0 Then
 		_GDIPlus_PenDispose($g_hRdrPenSepEdge)
 		$g_hRdrPenSepEdge = 0
@@ -254,6 +272,7 @@ Func Renderer_Frame()
 
 	Renderer_DrawGrid()
 	Renderer_DrawBox()
+	Renderer_DrawHoverZone()
 	Renderer_DrawSeparators()
 	Renderer_DrawHud()
 
@@ -354,8 +373,21 @@ Func Renderer_DrawBox()
 EndFunc   ;==>Renderer_DrawBox
 
 ; -----------------------------------------------------------------------------
+; Voile translucide sur la sous-zone survolée : retour visuel de l'endroit où
+; un clic créerait un séparateur. Le renderer LIT l'état de Selection.au3.
+; -----------------------------------------------------------------------------
+Func Renderer_DrawHoverZone()
+	Local $iZone = Selection_GetHoverZone()
+	If $iZone < 0 Or $iZone >= Zones_Count() Then Return
+	Renderer_DrawWorldRect($g_aZones[$iZone][$ZONE_X1], $g_aZones[$iZone][$ZONE_Y1], _
+			$g_aZones[$iZone][$ZONE_X2] - $g_aZones[$iZone][$ZONE_X1], _
+			$g_aZones[$iZone][$ZONE_Y2] - $g_aZones[$iZone][$ZONE_Y1], $g_hRdrBrushHover, 0)
+EndFunc   ;==>Renderer_DrawHoverZone
+
+; -----------------------------------------------------------------------------
 ; Séparateurs : un rectangle par segment, à l'épaisseur réelle du layer (mm),
-; rempli de la couleur du layer avec un contour assombri.
+; rempli de la couleur du layer avec un contour assombri. Un séparateur
+; sélectionné (directement ou via son groupe) reçoit un contour épais dédié.
 ; Le renderer ne fait que LIRE le modèle : portées et positions viennent du
 ; recalcul métier (Zones_Rebuild), jamais d'un calcul local.
 ; -----------------------------------------------------------------------------
@@ -372,12 +404,15 @@ Func Renderer_DrawSeparators()
 		_GDIPlus_BrushSetSolidColor($g_hRdrBrushSep, $iColor)
 		_GDIPlus_PenSetColor($g_hRdrPenSepEdge, Renderer_DarkenColor($iColor))
 
+		; Dessin différencié de la sélection (cahier des charges).
+		Local $hPen = Selection_IsRowSelected($i) ? $g_hRdrPenSelect : $g_hRdrPenSepEdge
+
 		If Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V Then
 			Renderer_DrawWorldRect($fPos - $fThick / 2, $fS1, $fThick, $fS2 - $fS1, _
-					$g_hRdrBrushSep, $g_hRdrPenSepEdge)
+					$g_hRdrBrushSep, $hPen)
 		Else
 			Renderer_DrawWorldRect($fS1, $fPos - $fThick / 2, $fS2 - $fS1, $fThick, _
-					$g_hRdrBrushSep, $g_hRdrPenSepEdge)
+					$g_hRdrBrushSep, $hPen)
 		EndIf
 	Next
 EndFunc   ;==>Renderer_DrawSeparators
