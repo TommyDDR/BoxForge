@@ -1,12 +1,16 @@
 #include-once
 #include "Box.au3"
 #include "Layers.au3"
+#include "Separator.au3"
 
 ; =============================================================================
-; Project.au3 — Projet courant (niveaux 1-2 : données + gestion métier).
+; Project.au3 — Projet courant (niveau 1 : instance des données).
 ;
-; Ce module POSSÈDE l'instance du projet ouvert : la boîte pour l'instant ;
-; les séparateurs, layers et groupes s'y ajouteront aux étapes suivantes.
+; Ce module POSSÈDE l'instance du projet ouvert : boîte, layers, séparateurs.
+; Il n'offre que des accès BRUTS (lecture, écriture validée, ajout/retrait) :
+; la cohérence d'ensemble (sous-zones, contraintes d'écart, groupes) est la
+; responsabilité du niveau 2 (Zones.au3) — toute mutation de séparateur doit
+; passer par les fonctions Metier_* qui recalculent les données dérivées.
 ;
 ; Totalement indépendant de l'affichage : aucune GDI, aucune UI.
 ; Les mutations ne posent PAS le dirty flag de vue : c'est la responsabilité
@@ -16,6 +20,11 @@
 ; --- Instance du projet courant ---
 Global $g_aPrjBox[$BOX_FIELD_COUNT]
 Global $g_aPrjLayers[$LAYERS_COUNT][$LAYER_FIELD_COUNT]
+Global $g_aPrjSeps[0][$SEP_FIELD_COUNT]
+
+; --- Compteurs d'identifiants (jamais réutilisés au sein d'un projet) ---
+Global $g_iPrjSepNextId    = 1
+Global $g_iPrjSepNextGroup = 1
 
 ; -----------------------------------------------------------------------------
 ; Nouveau projet : crée automatiquement la boîte et les 30 layers par défaut.
@@ -23,6 +32,7 @@ Global $g_aPrjLayers[$LAYERS_COUNT][$LAYER_FIELD_COUNT]
 Func Project_New()
 	$g_aPrjBox = Box_CreateDefault()
 	Layers_CreateDefaults($g_aPrjLayers)
+	Project_SepReset()
 EndFunc   ;==>Project_New
 
 ; --- Accès à la boîte ---------------------------------------------------------
@@ -51,3 +61,88 @@ Func Project_LayerSet($iLayer, $iField, $fValue)
 	$g_aPrjLayers[$iLayer][$iField] = $fValue
 	Return True
 EndFunc   ;==>Project_LayerSet
+
+; --- Accès aux séparateurs ----------------------------------------------------
+; ATTENTION : accès BRUTS. Toute mutation doit passer par Metier_* (Zones.au3)
+; qui recalcule sous-zones/portées/intersections et applique les contraintes.
+
+; Vide la liste des séparateurs et réarme les compteurs d'identifiants.
+Func Project_SepReset()
+	ReDim $g_aPrjSeps[0][$SEP_FIELD_COUNT]
+	$g_iPrjSepNextId = 1
+	$g_iPrjSepNextGroup = 1
+EndFunc   ;==>Project_SepReset
+
+Func Project_SepCount()
+	Return UBound($g_aPrjSeps)
+EndFunc   ;==>Project_SepCount
+
+Func Project_SepGet($iRow, $iField)
+	Return $g_aPrjSeps[$iRow][$iField]
+EndFunc   ;==>Project_SepGet
+
+Func Project_SepSet($iRow, $iField, $vValue)
+	$g_aPrjSeps[$iRow][$iField] = $vValue
+EndFunc   ;==>Project_SepSet
+
+; Longueur du segment (mm) — donnée dérivée maintenue par Zones_Rebuild.
+Func Project_SepLength($iRow)
+	Return $g_aPrjSeps[$iRow][$SEP_SPAN2] - $g_aPrjSeps[$iRow][$SEP_SPAN1]
+EndFunc   ;==>Project_SepLength
+
+; Index de ligne d'un séparateur par identifiant. -1 si absent.
+; (Les index de ligne bougent lors des suppressions : ne JAMAIS conserver un
+;  index entre deux mutations — conserver l'Id.)
+Func Project_SepFindById($iId)
+	For $i = 0 To UBound($g_aPrjSeps) - 1
+		If $g_aPrjSeps[$i][$SEP_ID] = $iId Then Return $i
+	Next
+	Return -1
+EndFunc   ;==>Project_SepFindById
+
+; Ajoute un séparateur et retourne son identifiant.
+; Les portées (Span1/Span2) seront calculées par le prochain Zones_Rebuild.
+Func Project_SepAdd($iGroup, $iOrient, $fPos, $fAnchor, $iLayer)
+	Local $iRow = UBound($g_aPrjSeps)
+	ReDim $g_aPrjSeps[$iRow + 1][$SEP_FIELD_COUNT]
+	$g_aPrjSeps[$iRow][$SEP_ID] = $g_iPrjSepNextId
+	$g_aPrjSeps[$iRow][$SEP_GROUP] = $iGroup
+	$g_aPrjSeps[$iRow][$SEP_ORIENT] = $iOrient
+	$g_aPrjSeps[$iRow][$SEP_POS] = $fPos
+	$g_aPrjSeps[$iRow][$SEP_ANCHOR] = $fAnchor
+	$g_aPrjSeps[$iRow][$SEP_LAYER] = $iLayer
+	$g_aPrjSeps[$iRow][$SEP_SPAN1] = $fPos
+	$g_aPrjSeps[$iRow][$SEP_SPAN2] = $fPos
+	$g_iPrjSepNextId += 1
+	Return $g_aPrjSeps[$iRow][$SEP_ID]
+EndFunc   ;==>Project_SepAdd
+
+; Supprime la ligne $iRow (décale les suivantes : l'ordre de création,
+; porté par l'ordre des lignes, est préservé).
+Func Project_SepDeleteRow($iRow)
+	Local $iCount = UBound($g_aPrjSeps)
+	If $iRow < 0 Or $iRow >= $iCount Then Return
+	For $i = $iRow To $iCount - 2
+		For $j = 0 To $SEP_FIELD_COUNT - 1
+			$g_aPrjSeps[$i][$j] = $g_aPrjSeps[$i + 1][$j]
+		Next
+	Next
+	ReDim $g_aPrjSeps[$iCount - 1][$SEP_FIELD_COUNT]
+EndFunc   ;==>Project_SepDeleteRow
+
+; Alloue un identifiant de groupe (création globale SHIFT).
+Func Project_SepAllocGroupId()
+	Local $iGroup = $g_iPrjSepNextGroup
+	$g_iPrjSepNextGroup += 1
+	Return $iGroup
+EndFunc   ;==>Project_SepAllocGroupId
+
+; Nombre de segments appartenant au groupe $iGroup.
+Func Project_SepGroupSize($iGroup)
+	If $iGroup = $SEP_NO_GROUP Then Return 0
+	Local $iCount = 0
+	For $i = 0 To UBound($g_aPrjSeps) - 1
+		If $g_aPrjSeps[$i][$SEP_GROUP] = $iGroup Then $iCount += 1
+	Next
+	Return $iCount
+EndFunc   ;==>Project_SepGroupSize

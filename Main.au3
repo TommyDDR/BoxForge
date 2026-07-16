@@ -1,6 +1,7 @@
 #include <GUIConstantsEx.au3>
 #include "App.au3"
 #include "Project.au3"
+#include "Zones.au3"
 #include "Camera.au3"
 #include "Input.au3"
 #include "UI.au3"
@@ -19,8 +20,9 @@
 Main()
 
 Func Main()
-	; Nouveau projet : la boîte par défaut est créée automatiquement.
-	Project_New()
+	; Nouveau projet : la boîte par défaut est créée automatiquement
+	; (et les données dérivées — sous-zones — sont calculées).
+	Metier_NewProject()
 
 	UI_Create()
 	UI_RefreshBoxInputs()

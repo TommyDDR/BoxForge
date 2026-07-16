@@ -6,6 +6,7 @@
 #include "App.au3"
 #include "Camera.au3"
 #include "Project.au3"
+#include "Zones.au3"
 
 ; =============================================================================
 ; Renderer.au3 — Chaîne de rendu GDI+ (niveau 3 : affichage).
@@ -35,6 +36,9 @@ Global Const $RDR_COLOR_WALL       = 0xFF4A4238 ; parois de la boîte (bois somb
 Global Const $RDR_COLOR_INTERIOR   = 0xFF23252B ; fond intérieur de la boîte
 Global Const $RDR_COLOR_BOX_LINE   = 0xFFA8865E ; contours de la boîte
 
+; Alpha plein appliqué aux couleurs de layer (stockées en 0xRRGGBB au modèle).
+Global Const $RDR_ALPHA_OPAQUE = 0xFF000000
+
 ; --- Grille : espacement écran minimal d'une ligne fine (pixels) ---
 Global Const $RDR_GRID_MIN_SPACING_PX = 10
 
@@ -63,6 +67,13 @@ Global $g_hRdrPenAxis       = 0
 Global $g_hRdrBrushWall     = 0
 Global $g_hRdrBrushInterior = 0
 Global $g_hRdrPenBoxLine    = 0
+
+; Brush/pen RÉUTILISABLES pour les séparateurs : un seul couple d'objets dont
+; la couleur est changée par SetSolidColor/SetColor (coût µs) — jamais de
+; création de brush/pen dans le chemin par frame (§8), et aucune invalidation
+; de cache à gérer quand la couleur d'un layer change.
+Global $g_hRdrBrushSep   = 0
+Global $g_hRdrPenSepEdge = 0
 
 ; --- Registre de disposers (cf. pratiques §11) ---
 Global $g_aRdrDisposers[0]
@@ -156,11 +167,21 @@ Func Renderer_CreateSharedObjects()
 	$g_hRdrBrushWall = _GDIPlus_BrushCreateSolid($RDR_COLOR_WALL)
 	$g_hRdrBrushInterior = _GDIPlus_BrushCreateSolid($RDR_COLOR_INTERIOR)
 	$g_hRdrPenBoxLine = _GDIPlus_PenCreate($RDR_COLOR_BOX_LINE)
+	$g_hRdrBrushSep = _GDIPlus_BrushCreateSolid(0xFF808080)
+	$g_hRdrPenSepEdge = _GDIPlus_PenCreate(0xFF404040)
 
 	Renderer_RegisterDisposer("Renderer_DisposeSharedObjects")
 EndFunc   ;==>Renderer_CreateSharedObjects
 
 Func Renderer_DisposeSharedObjects()
+	If $g_hRdrPenSepEdge <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenSepEdge)
+		$g_hRdrPenSepEdge = 0
+	EndIf
+	If $g_hRdrBrushSep <> 0 Then
+		_GDIPlus_BrushDispose($g_hRdrBrushSep)
+		$g_hRdrBrushSep = 0
+	EndIf
 	If $g_hRdrPenBoxLine <> 0 Then
 		_GDIPlus_PenDispose($g_hRdrPenBoxLine)
 		$g_hRdrPenBoxLine = 0
@@ -233,6 +254,7 @@ Func Renderer_Frame()
 
 	Renderer_DrawGrid()
 	Renderer_DrawBox()
+	Renderer_DrawSeparators()
 	Renderer_DrawHud()
 
 	Renderer_Present()
@@ -305,8 +327,14 @@ Func Renderer_DrawWorldRect($fXmm, $fYmm, $fWmm, $fHmm, $hBrush, $hPen)
 	Local $iY0 = Camera_WorldToScreenY($fYmm)
 	Local $iX1 = Camera_WorldToScreenX($fXmm + $fWmm)
 	Local $iY1 = Camera_WorldToScreenY($fYmm + $fHmm)
-	If $hBrush <> 0 Then _GDIPlus_GraphicsFillRect($g_hRdrGfx, $iX0, $iY0, $iX1 - $iX0, $iY1 - $iY0, $hBrush)
-	If $hPen <> 0 Then _GDIPlus_GraphicsDrawRect($g_hRdrGfx, $iX0, $iY0, $iX1 - $iX0, $iY1 - $iY0, $hPen)
+	; Taille écran minimale de 1 px : une dimension monde non nulle reste
+	; toujours visible, même très dézoomée (cf. pratiques §6, Render_ScaledSize).
+	Local $iW = $iX1 - $iX0
+	Local $iH = $iY1 - $iY0
+	If $iW < 1 And $fWmm > 0 Then $iW = 1
+	If $iH < 1 And $fHmm > 0 Then $iH = 1
+	If $hBrush <> 0 Then _GDIPlus_GraphicsFillRect($g_hRdrGfx, $iX0, $iY0, $iW, $iH, $hBrush)
+	If $hPen <> 0 Then _GDIPlus_GraphicsDrawRect($g_hRdrGfx, $iX0, $iY0, $iW, $iH, $hPen)
 EndFunc   ;==>Renderer_DrawWorldRect
 
 ; -----------------------------------------------------------------------------
@@ -326,11 +354,48 @@ Func Renderer_DrawBox()
 EndFunc   ;==>Renderer_DrawBox
 
 ; -----------------------------------------------------------------------------
+; Séparateurs : un rectangle par segment, à l'épaisseur réelle du layer (mm),
+; rempli de la couleur du layer avec un contour assombri.
+; Le renderer ne fait que LIRE le modèle : portées et positions viennent du
+; recalcul métier (Zones_Rebuild), jamais d'un calcul local.
+; -----------------------------------------------------------------------------
+Func Renderer_DrawSeparators()
+	For $i = 0 To Project_SepCount() - 1
+		Local $iLayer = Project_SepGet($i, $SEP_LAYER)
+		Local $iColor = BitOR($RDR_ALPHA_OPAQUE, Project_LayerGet($iLayer, $LAYER_COLOR))
+		Local $fThick = Project_LayerGet($iLayer, $LAYER_THICKNESS)
+		Local $fPos = Project_SepGet($i, $SEP_POS)
+		Local $fS1 = Project_SepGet($i, $SEP_SPAN1)
+		Local $fS2 = Project_SepGet($i, $SEP_SPAN2)
+		If $fS2 - $fS1 <= 0 Then ContinueLoop ; portée dégénérée : rien à dessiner
+
+		_GDIPlus_BrushSetSolidColor($g_hRdrBrushSep, $iColor)
+		_GDIPlus_PenSetColor($g_hRdrPenSepEdge, Renderer_DarkenColor($iColor))
+
+		If Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V Then
+			Renderer_DrawWorldRect($fPos - $fThick / 2, $fS1, $fThick, $fS2 - $fS1, _
+					$g_hRdrBrushSep, $g_hRdrPenSepEdge)
+		Else
+			Renderer_DrawWorldRect($fS1, $fPos - $fThick / 2, $fS2 - $fS1, $fThick, _
+					$g_hRdrBrushSep, $g_hRdrPenSepEdge)
+		EndIf
+	Next
+EndFunc   ;==>Renderer_DrawSeparators
+
+; Assombrit une couleur ARGB de moitié (contours des séparateurs).
+Func Renderer_DarkenColor($iArgb)
+	Local $iR = BitShift(BitAND($iArgb, 0x00FF0000), 17) ; composante /2
+	Local $iG = BitShift(BitAND($iArgb, 0x0000FF00), 9)
+	Local $iB = BitShift(BitAND($iArgb, 0x000000FF), 1)
+	Return BitOR($RDR_ALPHA_OPAQUE, BitShift($iR, -16), BitShift($iG, -8), $iB)
+EndFunc   ;==>Renderer_DarkenColor
+
+; -----------------------------------------------------------------------------
 ; HUD : informations d'état en haut à gauche du canvas (zoom, pas de grille).
 ; -----------------------------------------------------------------------------
 Func Renderer_DrawHud()
-	Local $sInfo = StringFormat("zoom : %.2f px/mm   |   grille : %d mm", _
-			Camera_GetZoom(), Renderer_PickGridStep())
+	Local $sInfo = StringFormat("zoom : %.2f px/mm   |   grille : %d mm   |   séparateurs : %d   |   sous-zones : %d", _
+			Camera_GetZoom(), Renderer_PickGridStep(), Project_SepCount(), Zones_Count())
 	Local $tLayout = _GDIPlus_RectFCreate(10, 8, $g_iRdrW - 20, 24)
 	_GDIPlus_GraphicsDrawStringEx($g_hRdrGfx, $sInfo, $g_hRdrFontUi, $tLayout, _
 			$g_hRdrFormatDefault, $g_hRdrBrushText)

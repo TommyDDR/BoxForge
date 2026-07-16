@@ -7,6 +7,7 @@
 #include <Misc.au3>
 #include "App.au3"
 #include "Project.au3"
+#include "Zones.au3"
 
 ; =============================================================================
 ; UI.au3 — Fenêtre principale et disposition des zones (niveau 4 : UI).
@@ -232,10 +233,13 @@ EndFunc   ;==>UI_RefreshBoxInputs
 
 ; Applique les saisies au modèle : chaque champ passe par la validation
 ; métier ; les valeurs refusées sont simplement réaffichées telles quelles.
+; Les dimensions ayant pu changer, le métier ramène les séparateurs dans le
+; nouvel intérieur et recalcule les sous-zones.
 Func UI_ApplyBoxInputs()
 	For $i = 0 To $BOX_FIELD_COUNT - 1
 		Project_BoxSet($i, Number(GUICtrlRead($g_aidUiBoxInputs[$i])))
 	Next
+	Metier_OnBoxChanged()
 	UI_RefreshBoxInputs() ; réaffiche les valeurs réellement acceptées
 	App_InvalidateView()
 EndFunc   ;==>UI_ApplyBoxInputs
