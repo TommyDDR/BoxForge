@@ -1,0 +1,9 @@
+# Binaires compilés
+*.exe
+
+# Sauvegardes SciTE / AutoIt
+*.bak
+*.au3.~*
+
+# Fichiers temporaires
+*.tmp
