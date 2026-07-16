@@ -49,6 +49,12 @@ Global $g_bInpPanning = False
 Global $g_iInpLastX   = 0 ; dernière position souris (client canvas)
 Global $g_iInpLastY   = 0
 
+; --- État du drag de séparateur en cours ---
+Global $g_iInpDragSepId = -1  ; identifiant du séparateur déplacé (-1 = aucun)
+Global $g_fInpDragGrab  = 0.0 ; écart curseur→position au moment de la prise (mm)
+                              ; conservé pendant tout le drag : pas de "saut"
+                              ; du séparateur sous le curseur
+
 ; --- Polling clavier : handle user32 partagé + états précédents (détection de
 ;     front montant : une action par appui, pas une par tour de boucle) ---
 Global $g_hInpUser32  = 0
@@ -64,6 +70,7 @@ Func Input_Init()
 	GUIRegisterMsg($WM_MBUTTONUP, "Input_OnMButtonUp")
 	GUIRegisterMsg($WM_MOUSEMOVE, "Input_OnMouseMove")
 	GUIRegisterMsg($WM_LBUTTONDOWN, "Input_OnLButtonDown")
+	GUIRegisterMsg($WM_LBUTTONUP, "Input_OnLButtonUp")
 	GUIRegisterMsg($WM_RBUTTONDOWN, "Input_OnRButtonDown")
 
 	$g_hInpUser32 = DllOpen("user32.dll")
@@ -173,8 +180,30 @@ Func Input_OnLButtonDown($hWnd, $iMsg, $wParam, $lParam)
 	EndIf
 
 	Input_ApplySelection($iId)
+
+	; Démarre le drag : le séparateur (sélectionné ou fraîchement créé) suit
+	; la souris jusqu'au relâchement. La capture garantit la continuité même
+	; quand le curseur sort du canvas.
+	If $iId <> -1 Then
+		Local $iRow = Project_SepFindById($iId)
+		$g_iInpDragSepId = $iId
+		$g_fInpDragGrab = ((Project_SepGet($iRow, $SEP_ORIENT) = $SEP_ORIENT_V) ? $fWx : $fWy) _
+				 - Project_SepGet($iRow, $SEP_POS)
+		_WinAPI_SetCapture(UI_GetCanvasHwnd())
+	EndIf
 	Return 0
 EndFunc   ;==>Input_OnLButtonDown
+
+; Fin du drag de séparateur : libère la capture et resynchronise le panneau.
+Func Input_OnLButtonUp($hWnd, $iMsg, $wParam, $lParam)
+	#forceref $hWnd, $iMsg, $wParam, $lParam
+	If $g_iInpDragSepId = -1 Then Return $GUI_RUNDEFMSG
+
+	$g_iInpDragSepId = -1
+	_WinAPI_ReleaseCapture()
+	UI_RefreshSeparatorSection()
+	Return 0
+EndFunc   ;==>Input_OnLButtonUp
 
 ; -----------------------------------------------------------------------------
 ; Clic droit : sélection uniquement (cahier des charges) — jamais de création.
@@ -220,6 +249,9 @@ EndFunc   ;==>Input_PollKeys
 ; -----------------------------------------------------------------------------
 ; Déplacement souris :
 ;   - pan en temps réel pendant le drag milieu ;
+;   - déplacement TEMPS RÉEL du séparateur pendant le drag gauche : le métier
+;     clampe (sous-zone + écart 10 mm) et recalcule les sous-zones à chaque
+;     pas — l'affichage suit immédiatement ;
 ;   - sinon, suivi de la sous-zone survolée (retour visuel de création).
 ; -----------------------------------------------------------------------------
 Func Input_OnMouseMove($hWnd, $iMsg, $wParam, $lParam)
@@ -232,6 +264,16 @@ Func Input_OnMouseMove($hWnd, $iMsg, $wParam, $lParam)
 	If $g_bInpPanning Then
 		Camera_PanByPixels($iX - $g_iInpLastX, $iY - $g_iInpLastY)
 		App_InvalidateView()
+	ElseIf $g_iInpDragSepId <> -1 Then
+		Local $iRow = Project_SepFindById($g_iInpDragSepId)
+		If $iRow <> -1 Then
+			Local $fCursor = (Project_SepGet($iRow, $SEP_ORIENT) = $SEP_ORIENT_V) _
+					 ? Camera_ScreenToWorldX($iX) : Camera_ScreenToWorldY($iY)
+			If Metier_MoveSeparator($g_iInpDragSepId, $fCursor - $g_fInpDragGrab) Then
+				UI_RefreshSeparatorPosition() ; maj légère : position + longueur
+				App_InvalidateView()
+			EndIf
+		EndIf
 	Else
 		; Sous-zone sous le curseur (invalidation seulement si elle change).
 		Local $iZone = Zones_FindAt(Camera_ScreenToWorldX($iX), Camera_ScreenToWorldY($iY))

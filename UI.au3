@@ -75,12 +75,13 @@ Global $g_idUiBtnApplyLayer     = 0
 ; Visible uniquement quand un séparateur est sélectionné. Les contrôles sont
 ; recensés dans $g_aidUiSepCtrls pour être montrés/masqués d'un bloc.
 Global $g_aidUiSepCtrls[0]
-Global $g_idUiSepTitle      = 0 ; "Séparateur #n (vertical)"
-Global $g_idUiSepPosValue   = 0 ; position (lecture seule à cette étape)
-Global $g_idUiSepLenValue   = 0 ; longueur (dérivée, lecture seule)
-Global $g_idUiSepLayerCombo = 0 ; layer du séparateur (éditable)
-Global $g_idUiSepGroupValue = 0 ; groupe SHIFT éventuel
-Global $g_idUiBtnSepDelete  = 0
+Global $g_idUiSepTitle       = 0 ; "Séparateur #n (vertical)"
+Global $g_idUiSepPosInput    = 0 ; position (éditable : saisie directe clampée)
+Global $g_idUiSepLenValue    = 0 ; longueur (dérivée, lecture seule)
+Global $g_idUiSepLayerCombo  = 0 ; layer du séparateur (éditable)
+Global $g_idUiSepGroupValue  = 0 ; groupe SHIFT éventuel
+Global $g_idUiBtnSepApplyPos = 0
+Global $g_idUiBtnSepDelete   = 0
 
 ; --- Panneau du bas : liste des layers ---
 Global $g_idUiLayerList = 0
@@ -150,7 +151,17 @@ Func UI_CreateSeparatorSection($iYStart)
 	UI_TrackSepCtrl($g_idUiSepTitle)
 
 	Local $iY = $iYStart + 26
-	$g_idUiSepPosValue = UI_CreateSepValueRow("Position (mm)", $iY)
+
+	; Position : saisissable — la valeur appliquée est clampée par le métier
+	; (sous-zone + écart minimal), puis réaffichée telle qu'acceptée.
+	Local $idPosLabel = GUICtrlCreateLabel("Position (mm)", 12, $iY + 3, 136, 18)
+	GUICtrlSetColor($idPosLabel, $UI_COLOR_TEXT_DIM)
+	GUICtrlSetBkColor($idPosLabel, $GUI_BKCOLOR_TRANSPARENT)
+	UI_TrackSepCtrl($idPosLabel)
+	$g_idUiSepPosInput = GUICtrlCreateInput("", 156, $iY, 96, 22)
+	UI_TrackSepCtrl($g_idUiSepPosInput)
+	$iY += 28
+
 	$g_idUiSepLenValue = UI_CreateSepValueRow("Longueur (mm)", $iY)
 	$g_idUiSepGroupValue = UI_CreateSepValueRow("Groupe", $iY)
 
@@ -168,6 +179,8 @@ Func UI_CreateSeparatorSection($iYStart)
 	UI_TrackSepCtrl($g_idUiSepLayerCombo)
 	$iY += 28
 
+	$g_idUiBtnSepApplyPos = GUICtrlCreateButton("Appliquer", 52, $iY + 4, 96, 26)
+	UI_TrackSepCtrl($g_idUiBtnSepApplyPos)
 	$g_idUiBtnSepDelete = GUICtrlCreateButton("Supprimer", 156, $iY + 4, 96, 26)
 	UI_TrackSepCtrl($g_idUiBtnSepDelete)
 
@@ -212,8 +225,7 @@ Func UI_RefreshSeparatorSection()
 
 	GUICtrlSetData($g_idUiSepTitle, StringFormat("Séparateur #%d (%s)", _
 			Project_SepGet($iRow, $SEP_ID), Separator_OrientName(Project_SepGet($iRow, $SEP_ORIENT))))
-	GUICtrlSetData($g_idUiSepPosValue, StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)))
-	GUICtrlSetData($g_idUiSepLenValue, StringFormat("%.1f", Project_SepLength($iRow)))
+	UI_RefreshSeparatorPosition()
 
 	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
 	GUICtrlSetData($g_idUiSepGroupValue, ($iGroup = $SEP_NO_GROUP) ? "aucun" _
@@ -224,6 +236,25 @@ Func UI_RefreshSeparatorSection()
 	_GUICtrlComboBox_SelectString(GUICtrlGetHandle($g_idUiSepLayerCombo), _
 			Layers_Name(Project_SepGet($iRow, $SEP_LAYER)))
 EndFunc   ;==>UI_RefreshSeparatorSection
+
+; Rafraîchit uniquement position et longueur (appelé à chaque pas de drag :
+; on ne retouche pas les autres contrôles, ni la combo).
+Func UI_RefreshSeparatorPosition()
+	Local $iRow = Selection_HasSelection() ? Project_SepFindById(Selection_GetId()) : -1
+	If $iRow = -1 Then Return
+	GUICtrlSetData($g_idUiSepPosInput, StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)))
+	GUICtrlSetData($g_idUiSepLenValue, StringFormat("%.1f", Project_SepLength($iRow)))
+EndFunc   ;==>UI_RefreshSeparatorPosition
+
+; Applique la position saisie au séparateur sélectionné : le métier clampe
+; (sous-zone + écart 10 mm) et déplace le groupe entier ; la valeur réellement
+; acceptée est réaffichée.
+Func UI_ApplySeparatorPosition()
+	If Not Selection_HasSelection() Then Return
+	Metier_MoveSeparator(Selection_GetId(), Number(GUICtrlRead($g_idUiSepPosInput)))
+	UI_RefreshSeparatorSection()
+	App_InvalidateView()
+EndFunc   ;==>UI_ApplySeparatorPosition
 
 ; Applique le layer choisi dans la liste au séparateur sélectionné — et à tout
 ; son groupe : les segments liés se comportent comme un seul objet.
@@ -393,6 +424,9 @@ Func UI_HandleGuiEvent($iMsg)
 			Return True
 		Case $g_idUiSepLayerCombo
 			UI_ApplySeparatorLayer()
+			Return True
+		Case $g_idUiBtnSepApplyPos
+			UI_ApplySeparatorPosition()
 			Return True
 		Case $g_idUiBtnSepDelete
 			UI_DeleteSelectedSeparator()
