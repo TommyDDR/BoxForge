@@ -11,3 +11,7 @@
 # Sorties de test locales
 /out/
 *.dxf
+
+# Verrous AutoCAD/TrueView
+*.dwl
+*.dwl2
