@@ -55,6 +55,12 @@ Global $g_fInpDragGrab  = 0.0 ; écart curseur→position au moment de la prise 
                               ; conservé pendant tout le drag : pas de "saut"
                               ; du séparateur sous le curseur
 
+; --- État du drag d'un bord de la boîte (redimensionnement) ---
+Global $g_iInpDragEdge = -1   ; $METIER_EDGE_* en cours de drag (-1 = aucun)
+
+; --- Curseur de survol courant (évite de re-poser le même curseur) ---
+Global $g_iInpCursor = -1     ; -1 = défaut, sinon id GUISetCursor (11/13)
+
 ; --- Polling clavier : handle user32 partagé + états précédents (détection de
 ;     front montant : une action par appui, pas une par tour de boucle) ---
 Global $g_hInpUser32  = 0
@@ -146,6 +152,54 @@ Func Input_PickTolMm()
 	Return $INP_PICK_TOL_PX / Camera_GetZoom()
 EndFunc   ;==>Input_PickTolMm
 
+; -----------------------------------------------------------------------------
+; Hit-test des bords de la boîte : retourne $METIER_EDGE_* si le point monde
+; touche une paroi (bande pleine + tolérance côté extérieur), sinon -1.
+; Aux coins, le bord dont la ligne EXTÉRIEURE est la plus proche gagne.
+; -----------------------------------------------------------------------------
+Func Input_HitBoxEdge($fWx, $fWy)
+	Local $fW = Project_BoxGet($BOX_WIDTH)
+	Local $fL = Project_BoxGet($BOX_LENGTH)
+	Local $fT = Project_BoxGet($BOX_THICKNESS)
+	Local $fTol = Input_PickTolMm()
+
+	; Hors du voisinage de la boîte : rien.
+	If $fWx < -$fTol Or $fWx > $fW + $fTol Or $fWy < -$fTol Or $fWy > $fL + $fTol Then Return -1
+
+	; Un bord est candidat si le point est dans sa bande (paroi + tolérance) ;
+	; le plus proche de sa ligne extérieure l'emporte.
+	Local $iBest = -1, $fBest = 1e9
+	If $fWx <= $fT And Abs($fWx) < $fBest Then
+		$iBest = $METIER_EDGE_W
+		$fBest = Abs($fWx)
+	EndIf
+	If $fWx >= $fW - $fT And Abs($fWx - $fW) < $fBest Then
+		$iBest = $METIER_EDGE_E
+		$fBest = Abs($fWx - $fW)
+	EndIf
+	If $fWy <= $fT And Abs($fWy) < $fBest Then
+		$iBest = $METIER_EDGE_N
+		$fBest = Abs($fWy)
+	EndIf
+	If $fWy >= $fL - $fT And Abs($fWy - $fL) < $fBest Then
+		$iBest = $METIER_EDGE_S
+		$fBest = Abs($fWy - $fL)
+	EndIf
+	Return $iBest
+EndFunc   ;==>Input_HitBoxEdge
+
+; Pose le curseur de survol adapté (11 = redim. vertical, 13 = horizontal,
+; -1 = défaut) sans le re-poser inutilement à chaque mouvement.
+Func Input_SetHoverCursor($iCursor)
+	If $g_iInpCursor = $iCursor Then Return
+	$g_iInpCursor = $iCursor
+	If $iCursor = -1 Then
+		GUISetCursor(2, 0, UI_GetCanvasHwnd()) ; flèche, plus d'override
+	Else
+		GUISetCursor($iCursor, 1, UI_GetCanvasHwnd())
+	EndIf
+EndFunc   ;==>Input_SetHoverCursor
+
 ; Applique une nouvelle sélection et synchronise panneau + vue.
 Func Input_ApplySelection($iId)
 	If Selection_Set($iId) Then
@@ -172,6 +226,18 @@ Func Input_OnLButtonDown($hWnd, $iMsg, $wParam, $lParam)
 
 	; Priorité à la sélection : on ne crée jamais SUR un séparateur existant.
 	Local $iId = Selection_HitTest($fWx, $fWy, Input_PickTolMm())
+
+	; Puis aux parois : drag d'un bord = redimensionnement de la boîte.
+	If $iId = -1 Then
+		Local $iEdge = Input_HitBoxEdge($fWx, $fWy)
+		If $iEdge <> -1 Then
+			$g_iInpDragEdge = $iEdge
+			_WinAPI_SetCapture(UI_GetCanvasHwnd())
+			Return 0
+		EndIf
+	EndIf
+
+	; Enfin à la création dans une sous-zone.
 	If $iId = -1 Then
 		Local $iOrient = (BitAND($wParam, $INP_MK_CONTROL) <> 0) ? $SEP_ORIENT_H : $SEP_ORIENT_V
 		Local $bGlobal = (BitAND($wParam, $INP_MK_SHIFT) <> 0)
@@ -197,14 +263,16 @@ Func Input_OnLButtonDown($hWnd, $iMsg, $wParam, $lParam)
 	Return 0
 EndFunc   ;==>Input_OnLButtonDown
 
-; Fin du drag de séparateur : libère la capture et resynchronise le panneau.
+; Fin d'un drag gauche (séparateur ou bord de boîte) : libère la capture et
+; resynchronise les panneaux concernés.
 Func Input_OnLButtonUp($hWnd, $iMsg, $wParam, $lParam)
 	#forceref $hWnd, $iMsg, $wParam, $lParam
-	If $g_iInpDragSepId = -1 Then Return $GUI_RUNDEFMSG
+	If $g_iInpDragSepId = -1 And $g_iInpDragEdge = -1 Then Return $GUI_RUNDEFMSG
 
+	If $g_iInpDragSepId <> -1 Then UI_RefreshSeparatorSection()
 	$g_iInpDragSepId = -1
+	$g_iInpDragEdge = -1
 	_WinAPI_ReleaseCapture()
-	UI_RefreshSeparatorSection()
 	Return 0
 EndFunc   ;==>Input_OnLButtonUp
 
@@ -264,6 +332,16 @@ Func Input_OnMouseMove($hWnd, $iMsg, $wParam, $lParam)
 	If $g_bInpPanning Then
 		Camera_PanByPixels($iX - $g_iInpLastX, $iY - $g_iInpLastY)
 		App_InvalidateView()
+	ElseIf $g_iInpDragEdge <> -1 Then
+		; Redimensionnement de la boîte : le bord suit le curseur (clampé par
+		; le métier), le contenu reste solidaire du bord opposé.
+		Local $fTarget = ($g_iInpDragEdge = $METIER_EDGE_W Or $g_iInpDragEdge = $METIER_EDGE_E) _
+				 ? Camera_ScreenToWorldX($iX) : Camera_ScreenToWorldY($iY)
+		If Metier_ResizeBoxEdge($g_iInpDragEdge, $fTarget) Then
+			UI_RefreshBoxInputs()
+			UI_MarkProjectModified()
+			App_InvalidateView()
+		EndIf
 	ElseIf $g_iInpDragSepId <> -1 Then
 		Local $iRow = Project_SepFindById($g_iInpDragSepId)
 		If $iRow <> -1 Then
@@ -276,9 +354,20 @@ Func Input_OnMouseMove($hWnd, $iMsg, $wParam, $lParam)
 			EndIf
 		EndIf
 	Else
+		Local $fWx = Camera_ScreenToWorldX($iX)
+		Local $fWy = Camera_ScreenToWorldY($iY)
+
 		; Sous-zone sous le curseur (invalidation seulement si elle change).
-		Local $iZone = Zones_FindAt(Camera_ScreenToWorldX($iX), Camera_ScreenToWorldY($iY))
-		If Selection_SetHoverZone($iZone) Then App_InvalidateView()
+		If Selection_SetHoverZone(Zones_FindAt($fWx, $fWy)) Then App_InvalidateView()
+
+		; Curseur de redimensionnement au survol d'un bord (hors séparateur).
+		Local $iEdge = -1
+		If Selection_HitTest($fWx, $fWy, Input_PickTolMm()) = -1 Then $iEdge = Input_HitBoxEdge($fWx, $fWy)
+		If $iEdge = -1 Then
+			Input_SetHoverCursor(-1)
+		Else
+			Input_SetHoverCursor(($iEdge = $METIER_EDGE_W Or $iEdge = $METIER_EDGE_E) ? 13 : 11)
+		EndIf
 	EndIf
 
 	$g_iInpLastX = $iX

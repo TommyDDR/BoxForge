@@ -429,6 +429,68 @@ Func Metier_DeleteSeparator($iId)
 	Return $iDeleted
 EndFunc   ;==>Metier_DeleteSeparator
 
+; --- Bords de la boîte (drag de redimensionnement) ------------------------------
+; Noms en coordonnées MONDE : N = bord y=0, S = bord y=Length,
+; W = bord x=0, E = bord x=Width. (À l'écran, l'axe Y étant inversé,
+; le bord N apparaît en bas.)
+Global Const $METIER_EDGE_W = 0
+Global Const $METIER_EDGE_E = 1
+Global Const $METIER_EDGE_N = 2
+Global Const $METIER_EDGE_S = 3
+
+; -----------------------------------------------------------------------------
+; Redimensionne la boîte en amenant le bord $iEdge à la coordonnée monde
+; $fWorldPos ; le bord OPPOSÉ reste fixe, puis la boîte est ré-ancrée en (0,0).
+; Pour que le contenu reste solidaire du bord fixe, les séparateurs sont
+; décalés du même ré-ancrage quand c'est le bord W ou N qui bouge, puis
+; clampés dans le nouvel intérieur (Metier_OnBoxChanged).
+; Retourne True si une dimension a effectivement changé.
+; -----------------------------------------------------------------------------
+Func Metier_ResizeBoxEdge($iEdge, $fWorldPos)
+	Local $fW = $g_aPrjBox[$BOX_WIDTH]
+	Local $fL = $g_aPrjBox[$BOX_LENGTH]
+	; Dimension minimale : les deux parois + une sous-zone exploitable.
+	Local $fMinDim = 2 * $g_aPrjBox[$BOX_THICKNESS] + 2 * $ZONES_MIN_GAP
+
+	Local $iField = ($iEdge = $METIER_EDGE_W Or $iEdge = $METIER_EDGE_E) ? $BOX_WIDTH : $BOX_LENGTH
+	Local $fOld = ($iField = $BOX_WIDTH) ? $fW : $fL
+
+	; Nouvelle dimension et décalage de ré-ancrage du contenu.
+	Local $fNew, $fShift = 0
+	Switch $iEdge
+		Case $METIER_EDGE_E, $METIER_EDGE_S
+			$fNew = $fWorldPos
+		Case $METIER_EDGE_W, $METIER_EDGE_N
+			; Le bord (0) bouge : dimension = bord opposé − nouvelle position,
+			; et le contenu se décale pour rester solidaire du bord fixe.
+			$fNew = $fOld - $fWorldPos
+			$fShift = -_Zones_Clamp($fWorldPos, -1000000, $fOld - $fMinDim)
+	EndSwitch
+	If $fNew < $fMinDim Then $fNew = $fMinDim
+	If Abs($fNew - $fOld) <= $ZONES_EPS Then Return False
+
+	If Not Project_BoxSet($iField, $fNew) Then Return False
+
+	; Décalage du contenu (axe du bord déplacé uniquement).
+	If $fShift <> 0 Then
+		Local $bShiftX = ($iEdge = $METIER_EDGE_W)
+		For $i = 0 To Project_SepCount() - 1
+			Local $bVert = (Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V)
+			; Pour un vertical : Pos = X, Anchor = Y ; pour un horizontal l'inverse.
+			Local $iPosIsX = $bVert ? $SEP_POS : $SEP_ANCHOR
+			Local $iPosIsY = $bVert ? $SEP_ANCHOR : $SEP_POS
+			If $bShiftX Then
+				Project_SepSet($i, $iPosIsX, Project_SepGet($i, $iPosIsX) + $fShift)
+			Else
+				Project_SepSet($i, $iPosIsY, Project_SepGet($i, $iPosIsY) + $fShift)
+			EndIf
+		Next
+	EndIf
+
+	Metier_OnBoxChanged() ; clamp dans le nouvel intérieur + recalcul des dérivées
+	Return True
+EndFunc   ;==>Metier_ResizeBoxEdge
+
 ; -----------------------------------------------------------------------------
 ; Après un changement de dimensions de la boîte : ramène chaque séparateur
 ; dans le nouvel intérieur (position ET ancre), puis recalcule les dérivées.
