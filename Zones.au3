@@ -73,11 +73,13 @@ EndFunc   ;==>_Zones_Clamp
 ; -----------------------------------------------------------------------------
 Func Zones_Rebuild()
 	; Sous-zone initiale : l'intérieur complet de la boîte.
+	Local $fIx1, $fIy1, $fIx2, $fIy2
+	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
 	ReDim $g_aZones[1][$ZONE_FIELD_COUNT]
-	$g_aZones[0][$ZONE_X1] = Box_InteriorX($g_aPrjBox)
-	$g_aZones[0][$ZONE_Y1] = Box_InteriorY($g_aPrjBox)
-	$g_aZones[0][$ZONE_X2] = Box_InteriorX($g_aPrjBox) + Box_InteriorW($g_aPrjBox)
-	$g_aZones[0][$ZONE_Y2] = Box_InteriorY($g_aPrjBox) + Box_InteriorH($g_aPrjBox)
+	$g_aZones[0][$ZONE_X1] = $fIx1
+	$g_aZones[0][$ZONE_Y1] = $fIy1
+	$g_aZones[0][$ZONE_X2] = $fIx2
+	$g_aZones[0][$ZONE_Y2] = $fIy2
 
 	; Réapplique chaque découpe dans l'ordre de création.
 	For $iRow = 0 To Project_SepCount() - 1
@@ -221,12 +223,14 @@ Func Zones_GetSepBounds($iRow, ByRef $fMin, ByRef $fMax)
 	Local $fS2 = Project_SepGet($iRow, $SEP_SPAN2)
 
 	; Bornes par défaut : les parois intérieures de la boîte.
+	Local $fIx1, $fIy1, $fIx2, $fIy2
+	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
 	If $iOrient = $SEP_ORIENT_V Then
-		$fMin = Box_InteriorX($g_aPrjBox)
-		$fMax = $fMin + Box_InteriorW($g_aPrjBox)
+		$fMin = $fIx1
+		$fMax = $fIx2
 	Else
-		$fMin = Box_InteriorY($g_aPrjBox)
-		$fMax = $fMin + Box_InteriorH($g_aPrjBox)
+		$fMin = $fIy1
+		$fMax = $fIy2
 	EndIf
 
 	For $i = 0 To UBound($g_aZones) - 1
@@ -325,7 +329,7 @@ Func Metier_CreateSeparator($fWx, $fWy, $iOrient, $bGlobal, $iLayer)
 	If $fHi - $fLo < 2 * $ZONES_MIN_GAP Then Return -1
 
 	Local $fPos = ($iOrient = $SEP_ORIENT_V) ? $fWx : $fWy
-	$fPos = _Zones_Clamp($fPos, $fLo + $ZONES_MIN_GAP, $fHi - $ZONES_MIN_GAP)
+	$fPos = Round(_Zones_Clamp($fPos, $fLo + $ZONES_MIN_GAP, $fHi - $ZONES_MIN_GAP), 2)
 
 	Local $iId = -1
 	If Not $bGlobal Then
@@ -357,7 +361,9 @@ Func Metier_CreateSeparator($fWx, $fWy, $iOrient, $bGlobal, $iLayer)
 EndFunc   ;==>Metier_CreateSeparator
 
 ; Applique une position à un séparateur ET à tous les segments de son groupe.
+; Toute position écrite au modèle est arrondie au centième de millimètre.
 Func _Zones_SetGroupPos($iRow, $fPos)
+	$fPos = Round($fPos, 2)
 	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
 	Project_SepSet($iRow, $SEP_POS, $fPos)
 	If $iGroup = $SEP_NO_GROUP Then Return
@@ -437,9 +443,15 @@ EndFunc   ;==>Metier_MoveSeparator
 ;
 ; Une position peut être PILOTÉE par une formule arithmétique référençant
 ; d'autres séparateurs par identifiant : "s1.pos + 20" (insensible à la
-; casse). Caractères autorisés : chiffres, point décimal, espaces, + - * /
-; ( ) et jetons sN.pos — rien d'autre (l'évaluation refuse tout le reste :
-; aucune injection possible via Execute).
+; casse), et les dimensions INTÉRIEURES de la boîte :
+;   b.w ou w → largeur intérieure  (Width  − 2 × épaisseur)
+;   b.l ou l → longueur intérieure (Length − 2 × épaisseur)
+;   b.h ou h → hauteur intérieure  (Height − épaisseur du fond)
+;   b.t ou t → épaisseur du matériau de la structure
+; Exemple : "w / 2 + t" (au milieu de l'intérieur, décalé d'une épaisseur).
+; Caractères autorisés : chiffres, point décimal, espaces, + - * / ( ) et
+; ces jetons — rien d'autre (l'évaluation refuse tout le reste : aucune
+; injection possible via Execute).
 ;
 ; Un séparateur piloté ne se déplace plus à la souris ni à la saisie ; il
 ; suit ses références (clampé par les contraintes habituelles). La
@@ -463,12 +475,21 @@ Func _Zones_FormulaRefs($sFormula, ByRef $aIds)
 	Return UBound($aIds)
 EndFunc   ;==>_Zones_FormulaRefs
 
+; Retire tous les jetons reconnus d'une formule : ce qui reste doit être de
+; l'arithmétique pure. Partagé par la validation et le chargement de projet.
+Func Zones_FormulaStripTokens($sFormula)
+	Local $s = StringRegExpReplace($sFormula, "(?i)s\d+\.pos", "")
+	$s = StringRegExpReplace($s, "(?i)\bb\.[wlht]\b", "")
+	$s = StringRegExpReplace($s, "(?i)\b[wlht]\b", "")
+	Return $s
+EndFunc   ;==>Zones_FormulaStripTokens
+
 ; -----------------------------------------------------------------------------
 ; Évalue une formule. Retourne True et pose $fOut, ou False si la formule est
 ; inévaluable (référence absente, syntaxe, caractère interdit).
 ; -----------------------------------------------------------------------------
 Func _Zones_FormulaEval($sFormula, ByRef $fOut)
-	; Substitution des jetons par la position courante de leur séparateur.
+	; Substitution des jetons sN.pos par la position courante du séparateur.
 	Local $aIds[0]
 	_Zones_FormulaRefs($sFormula, $aIds)
 	Local $sExpr = $sFormula
@@ -478,6 +499,23 @@ Func _Zones_FormulaEval($sFormula, ByRef $fOut)
 		$sExpr = StringRegExpReplace($sExpr, "(?i)s" & $aIds[$i] & "\.pos", _
 				StringFormat("%.6f", Project_SepGet($iRow, $SEP_POS)))
 	Next
+
+	; Variables de la boîte : dimensions INTÉRIEURES (voir en-tête).
+	; Les formes préfixées "b.x" sont substituées AVANT les formes nues
+	; (sinon \bw\b matcherait le w de "b.w").
+	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	Local $sW = StringFormat("%.6f", $g_aPrjBox[$BOX_WIDTH] - 2 * $fT)
+	Local $sL = StringFormat("%.6f", $g_aPrjBox[$BOX_LENGTH] - 2 * $fT)
+	Local $sH = StringFormat("%.6f", $g_aPrjBox[$BOX_HEIGHT] - $fT)
+	Local $sT = StringFormat("%.6f", $fT)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.w\b", $sW)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.l\b", $sL)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.h\b", $sH)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.t\b", $sT)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bw\b", $sW)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bl\b", $sL)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bh\b", $sH)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bt\b", $sT)
 
 	; Défense en profondeur : expression purement arithmétique, sinon refus
 	; (Execute est puissant — on ne lui passe JAMAIS de texte non filtré).
@@ -551,9 +589,9 @@ Func Metier_FormulaValidate($sFormula, $iSelfId)
 	If $sFormula = "" Then Return "" ; effacement : toujours permis
 
 	; Caractères : une fois les jetons retirés, seule l'arithmétique reste.
-	Local $sRest = StringRegExpReplace($sFormula, "(?i)s\d+\.pos", "")
-	If StringRegExp($sRest, "[^0-9\.\s\+\-\*\/\(\)]") Then _
-			Return "Caractères non autorisés. Attendu : nombres, + - * / ( ) et sN.pos (ex : s1.pos + 20)."
+	If StringRegExp(Zones_FormulaStripTokens($sFormula), "[^0-9\.\s\+\-\*\/\(\)]") Then _
+			Return "Caractères non autorisés. Attendu : nombres, + - * / ( ), sN.pos et " & _
+			"les variables boîte w, l, h, t (ou b.w, b.l, b.h, b.t) — dimensions intérieures."
 
 	; Références existantes ?
 	Local $aIds[0]
@@ -706,56 +744,79 @@ Global Const $METIER_EDGE_S = 3
 
 ; -----------------------------------------------------------------------------
 ; Redimensionne la boîte en amenant le bord $iEdge à la coordonnée monde
-; $fWorldPos ; le bord OPPOSÉ reste fixe, puis la boîte est ré-ancrée en (0,0).
-; Pour que le contenu reste solidaire du bord fixe, les séparateurs sont
-; décalés du même ré-ancrage quand c'est le bord W ou N qui bouge, puis
-; clampés dans le nouvel intérieur (Metier_OnBoxChanged).
-; Retourne True si une dimension a effectivement changé.
+; $fWorldPos (arrondie au centième). Le bord OPPOSÉ reste fixe :
+;   - bords E/S : la dimension change, l'origine ne bouge pas ;
+;   - bords O/N : l'ORIGINE suit le curseur (coordonnées négatives permises
+;     pendant la manipulation) — les séparateurs, en coordonnées monde,
+;     restent naturellement solidaires du bord fixe.
+; Le recalage en (0,0) n'a lieu qu'au relâchement (Metier_EndBoxResize).
+; Retourne True si quelque chose a effectivement changé.
 ; -----------------------------------------------------------------------------
 Func Metier_ResizeBoxEdge($iEdge, $fWorldPos)
-	Local $fW = $g_aPrjBox[$BOX_WIDTH]
-	Local $fL = $g_aPrjBox[$BOX_LENGTH]
+	$fWorldPos = Round($fWorldPos, 2)
 	; Dimension minimale : les deux parois + une sous-zone exploitable.
 	Local $fMinDim = 2 * $g_aPrjBox[$BOX_THICKNESS] + 2 * $ZONES_MIN_GAP
+	Local $fOrgX = Project_BoxOrgX(), $fOrgY = Project_BoxOrgY()
 
-	Local $iField = ($iEdge = $METIER_EDGE_W Or $iEdge = $METIER_EDGE_E) ? $BOX_WIDTH : $BOX_LENGTH
-	Local $fOld = ($iField = $BOX_WIDTH) ? $fW : $fL
-
-	; Nouvelle dimension et décalage de ré-ancrage du contenu.
-	Local $fNew, $fShift = 0
+	Local $bChanged = False
 	Switch $iEdge
-		Case $METIER_EDGE_E, $METIER_EDGE_S
-			$fNew = $fWorldPos
-		Case $METIER_EDGE_W, $METIER_EDGE_N
-			; Le bord (0) bouge : dimension = bord opposé − nouvelle position,
-			; et le contenu se décale pour rester solidaire du bord fixe.
-			$fNew = $fOld - $fWorldPos
-			$fShift = -_Zones_Clamp($fWorldPos, -1000000, $fOld - $fMinDim)
-	EndSwitch
-	If $fNew < $fMinDim Then $fNew = $fMinDim
-	If Abs($fNew - $fOld) <= $ZONES_EPS Then Return False
+		Case $METIER_EDGE_E
+			Local $fNewW = Round(_Zones_Clamp($fWorldPos - $fOrgX, $fMinDim, 1e9), 2)
+			If Abs($fNewW - $g_aPrjBox[$BOX_WIDTH]) > $ZONES_EPS Then $bChanged = Project_BoxSet($BOX_WIDTH, $fNewW)
 
-	If Not Project_BoxSet($iField, $fNew) Then Return False
+		Case $METIER_EDGE_S
+			Local $fNewL = Round(_Zones_Clamp($fWorldPos - $fOrgY, $fMinDim, 1e9), 2)
+			If Abs($fNewL - $g_aPrjBox[$BOX_LENGTH]) > $ZONES_EPS Then $bChanged = Project_BoxSet($BOX_LENGTH, $fNewL)
 
-	; Décalage du contenu (axe du bord déplacé uniquement).
-	If $fShift <> 0 Then
-		Local $bShiftX = ($iEdge = $METIER_EDGE_W)
-		For $i = 0 To Project_SepCount() - 1
-			Local $bVert = (Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V)
-			; Pour un vertical : Pos = X, Anchor = Y ; pour un horizontal l'inverse.
-			Local $iPosIsX = $bVert ? $SEP_POS : $SEP_ANCHOR
-			Local $iPosIsY = $bVert ? $SEP_ANCHOR : $SEP_POS
-			If $bShiftX Then
-				Project_SepSet($i, $iPosIsX, Project_SepGet($i, $iPosIsX) + $fShift)
-			Else
-				Project_SepSet($i, $iPosIsY, Project_SepGet($i, $iPosIsY) + $fShift)
+		Case $METIER_EDGE_W
+			Local $fRight = $fOrgX + $g_aPrjBox[$BOX_WIDTH] ; bord fixe
+			Local $fNewOrgX = Round(_Zones_Clamp($fWorldPos, -1e9, $fRight - $fMinDim), 2)
+			If Abs($fNewOrgX - $fOrgX) > $ZONES_EPS And Project_BoxSet($BOX_WIDTH, Round($fRight - $fNewOrgX, 2)) Then
+				Project_BoxSetOrg($fNewOrgX, $fOrgY)
+				$bChanged = True
 			EndIf
-		Next
+
+		Case $METIER_EDGE_N
+			Local $fTop = $fOrgY + $g_aPrjBox[$BOX_LENGTH] ; bord fixe
+			Local $fNewOrgY = Round(_Zones_Clamp($fWorldPos, -1e9, $fTop - $fMinDim), 2)
+			If Abs($fNewOrgY - $fOrgY) > $ZONES_EPS And Project_BoxSet($BOX_LENGTH, Round($fTop - $fNewOrgY, 2)) Then
+				Project_BoxSetOrg($fOrgX, $fNewOrgY)
+				$bChanged = True
+			EndIf
+	EndSwitch
+
+	If $bChanged Then Metier_OnBoxChanged() ; clamp des séparateurs + dérivées
+	Return $bChanged
+EndFunc   ;==>Metier_ResizeBoxEdge
+
+; -----------------------------------------------------------------------------
+; Fin d'un drag de bord : recale la boîte en (0,0). Tout le contenu (monde)
+; est décalé du même delta — visuellement rien ne bouge si l'appelant décale
+; aussi la caméra de ($fShiftX, $fShiftY) : c'est la grille qui se recale.
+; Retourne True si un recalage a eu lieu.
+; -----------------------------------------------------------------------------
+Func Metier_EndBoxResize(ByRef $fShiftX, ByRef $fShiftY)
+	$fShiftX = -Project_BoxOrgX()
+	$fShiftY = -Project_BoxOrgY()
+	If Abs($fShiftX) <= $ZONES_EPS And Abs($fShiftY) <= $ZONES_EPS Then
+		$fShiftX = 0
+		$fShiftY = 0
+		Return False
 	EndIf
 
-	Metier_OnBoxChanged() ; clamp dans le nouvel intérieur + recalcul des dérivées
+	For $i = 0 To Project_SepCount() - 1
+		; Pour un vertical : Pos = X, Anchor = Y ; pour un horizontal l'inverse.
+		Local $bVert = (Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V)
+		Local $iFieldX = $bVert ? $SEP_POS : $SEP_ANCHOR
+		Local $iFieldY = $bVert ? $SEP_ANCHOR : $SEP_POS
+		Project_SepSet($i, $iFieldX, Round(Project_SepGet($i, $iFieldX) + $fShiftX, 2))
+		Project_SepSet($i, $iFieldY, Round(Project_SepGet($i, $iFieldY) + $fShiftY, 2))
+	Next
+	Project_BoxSetOrg(0, 0)
+
+	Metier_OnBoxChanged()
 	Return True
-EndFunc   ;==>Metier_ResizeBoxEdge
+EndFunc   ;==>Metier_EndBoxResize
 
 ; -----------------------------------------------------------------------------
 ; Après un changement de dimensions de la boîte : ramène chaque séparateur
@@ -764,10 +825,8 @@ EndFunc   ;==>Metier_ResizeBoxEdge
 ; leur position absolue quand c'est possible, sinon ils sont clampés.
 ; -----------------------------------------------------------------------------
 Func Metier_OnBoxChanged()
-	Local $fIx1 = Box_InteriorX($g_aPrjBox)
-	Local $fIy1 = Box_InteriorY($g_aPrjBox)
-	Local $fIx2 = $fIx1 + Box_InteriorW($g_aPrjBox)
-	Local $fIy2 = $fIy1 + Box_InteriorH($g_aPrjBox)
+	Local $fIx1, $fIy1, $fIx2, $fIy2
+	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
 
 	For $i = 0 To Project_SepCount() - 1
 		If Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V Then

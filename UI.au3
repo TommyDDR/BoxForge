@@ -406,9 +406,9 @@ Func UI_RefreshSeparatorPosition()
 	If $iRow = -1 Then Return
 	Local $sFormula = Project_SepGet($iRow, $SEP_FORMULA)
 	GUICtrlSetData($g_idUiSepPosInput, ($sFormula = "") _
-			 ? StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)) : $sFormula)
-	GUICtrlSetData($g_idUiSepPosEff, StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)))
-	GUICtrlSetData($g_idUiSepLenValue, StringFormat("%.1f", Project_SepLength($iRow)))
+			 ? UI_FmtMm(Project_SepGet($iRow, $SEP_POS)) : $sFormula)
+	GUICtrlSetData($g_idUiSepPosEff, UI_FmtMm(Project_SepGet($iRow, $SEP_POS)))
+	GUICtrlSetData($g_idUiSepLenValue, UI_FmtMm(Project_SepLength($iRow)))
 EndFunc   ;==>UI_RefreshSeparatorPosition
 
 ; Applique la saisie du champ Position au séparateur sélectionné :
@@ -573,10 +573,18 @@ Func UI_PickLayerColor()
 	App_InvalidateView()
 EndFunc   ;==>UI_PickLayerColor
 
+; Format d'affichage d'une valeur en mm : 2 décimales maximum, sans zéros
+; inutiles ("150", "150.5", "150.25").
+Func UI_FmtMm($fValue)
+	Local $s = StringFormat("%.2f", $fValue)
+	$s = StringRegExpReplace($s, "0+$", "")
+	Return StringRegExpReplace($s, "\.$", "")
+EndFunc   ;==>UI_FmtMm
+
 ; Recharge les champs depuis le modèle (source de vérité : le métier).
 Func UI_RefreshBoxInputs()
 	For $i = 0 To $BOX_FIELD_COUNT - 1
-		GUICtrlSetData($g_aidUiBoxInputs[$i], Project_BoxGet($i))
+		GUICtrlSetData($g_aidUiBoxInputs[$i], UI_FmtMm(Project_BoxGet($i)))
 	Next
 EndFunc   ;==>UI_RefreshBoxInputs
 

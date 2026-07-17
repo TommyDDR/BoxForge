@@ -111,6 +111,16 @@ Func Camera_PanByPixels($iDxPx, $iDyPx)
 EndFunc   ;==>Camera_PanByPixels
 
 ; -----------------------------------------------------------------------------
+; Translation en coordonnées MONDE (mm) : suit un contenu qui vient d'être
+; décalé du même delta (ex. recalage de la boîte en (0,0) après un drag de
+; bord) — l'utilisateur ne voit alors rien bouger.
+; -----------------------------------------------------------------------------
+Func Camera_Translate($fDxMm, $fDyMm)
+	$g_fCamCenterX += $fDxMm
+	$g_fCamCenterY += $fDyMm
+EndFunc   ;==>Camera_Translate
+
+; -----------------------------------------------------------------------------
 ; Cadre un rectangle monde (mm) dans le viewport avec une marge relative.
 ; Utilisé pour centrer la boîte à l'ouverture d'un projet.
 ; -----------------------------------------------------------------------------

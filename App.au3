@@ -8,7 +8,7 @@
 ; =============================================================================
 
 Global Const $APP_NAME    = "BoxForge"
-Global Const $APP_VERSION = "0.10.0"
+Global Const $APP_VERSION = "0.11.0"
 
 ; -----------------------------------------------------------------------------
 ; Drapeau "la vue doit être recomposée" (dirty flag).

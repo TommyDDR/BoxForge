@@ -22,6 +22,15 @@ Global $g_aPrjBox[$BOX_FIELD_COUNT]
 Global $g_aPrjLayers[$LAYERS_COUNT][$LAYER_FIELD_COUNT]
 Global $g_aPrjSeps[0][$SEP_FIELD_COUNT]
 
+; --- Origine de la boîte (coin bas-gauche extérieur, monde) ---
+; INVARIANT : (0,0) en dehors d'un drag de bord. Pendant le drag d'un bord
+; O/N, l'origine suit le curseur (coordonnées négatives permises) pour que
+; le bord opposé reste visuellement fixe ; au relâchement, le métier recale
+; tout en (0,0) (Metier_EndBoxResize). La persistance et l'export DXF ne
+; voient JAMAIS d'origine non nulle.
+Global $g_fPrjBoxOrgX = 0.0
+Global $g_fPrjBoxOrgY = 0.0
+
 ; --- Compteurs d'identifiants (jamais réutilisés au sein d'un projet) ---
 Global $g_iPrjSepNextId    = 1
 Global $g_iPrjSepNextGroup = 1
@@ -33,7 +42,41 @@ Func Project_New()
 	$g_aPrjBox = Box_CreateDefault()
 	Layers_CreateDefaults($g_aPrjLayers)
 	Project_SepReset()
+	$g_fPrjBoxOrgX = 0.0
+	$g_fPrjBoxOrgY = 0.0
 EndFunc   ;==>Project_New
+
+; --- Origine et rectangles de la boîte -----------------------------------------
+Func Project_BoxOrgX()
+	Return $g_fPrjBoxOrgX
+EndFunc   ;==>Project_BoxOrgX
+
+Func Project_BoxOrgY()
+	Return $g_fPrjBoxOrgY
+EndFunc   ;==>Project_BoxOrgY
+
+Func Project_BoxSetOrg($fX, $fY)
+	$g_fPrjBoxOrgX = $fX
+	$g_fPrjBoxOrgY = $fY
+EndFunc   ;==>Project_BoxSetOrg
+
+; Rectangle extérieur de la boîte (monde, mm).
+Func Project_BoxOuter(ByRef $fX1, ByRef $fY1, ByRef $fX2, ByRef $fY2)
+	$fX1 = $g_fPrjBoxOrgX
+	$fY1 = $g_fPrjBoxOrgY
+	$fX2 = $g_fPrjBoxOrgX + $g_aPrjBox[$BOX_WIDTH]
+	$fY2 = $g_fPrjBoxOrgY + $g_aPrjBox[$BOX_LENGTH]
+EndFunc   ;==>Project_BoxOuter
+
+; Rectangle intérieur de la boîte (monde, mm) : là où vivent les sous-zones.
+Func Project_BoxInterior(ByRef $fX1, ByRef $fY1, ByRef $fX2, ByRef $fY2)
+	Project_BoxOuter($fX1, $fY1, $fX2, $fY2)
+	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	$fX1 += $fT
+	$fY1 += $fT
+	$fX2 -= $fT
+	$fY2 -= $fT
+EndFunc   ;==>Project_BoxInterior
 
 ; --- Accès à la boîte ---------------------------------------------------------
 Func Project_BoxGet($iField)

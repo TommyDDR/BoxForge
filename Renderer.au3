@@ -364,15 +364,17 @@ EndFunc   ;==>Renderer_DrawWorldRect
 ; Le renderer ne fait que LIRE le modèle (aucune logique métier).
 ; -----------------------------------------------------------------------------
 Func Renderer_DrawBox()
-	Local $fW = Project_BoxGet($BOX_WIDTH)
-	Local $fL = Project_BoxGet($BOX_LENGTH)
+	; Rectangles monde fournis par les données (l'origine peut être non nulle
+	; pendant un drag de bord : le renderer n'en sait rien, il dessine).
+	Local $fOx1, $fOy1, $fOx2, $fOy2, $fIx1, $fIy1, $fIx2, $fIy2
+	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
+	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
 
 	; Rectangle extérieur rempli (couleur parois) puis intérieur par-dessus :
 	; la bande restante visible EST la paroi, sans calcul de 4 rectangles.
-	Renderer_DrawWorldRect(0, 0, $fW, $fL, $g_hRdrBrushWall, 0)
-	Renderer_DrawWorldRect(Box_InteriorX($g_aPrjBox), Box_InteriorY($g_aPrjBox), _
-			Box_InteriorW($g_aPrjBox), Box_InteriorH($g_aPrjBox), $g_hRdrBrushInterior, $g_hRdrPenBoxLine)
-	Renderer_DrawWorldRect(0, 0, $fW, $fL, 0, $g_hRdrPenBoxLine)
+	Renderer_DrawWorldRect($fOx1, $fOy1, $fOx2 - $fOx1, $fOy2 - $fOy1, $g_hRdrBrushWall, 0)
+	Renderer_DrawWorldRect($fIx1, $fIy1, $fIx2 - $fIx1, $fIy2 - $fIy1, $g_hRdrBrushInterior, $g_hRdrPenBoxLine)
+	Renderer_DrawWorldRect($fOx1, $fOy1, $fOx2 - $fOx1, $fOy2 - $fOy1, 0, $g_hRdrPenBoxLine)
 EndFunc   ;==>Renderer_DrawBox
 
 ; -----------------------------------------------------------------------------

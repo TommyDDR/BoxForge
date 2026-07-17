@@ -188,8 +188,8 @@ Func ProjectIO_LoadFrom($sPath)
 		; profondeur avant toute évaluation), sinon position libre.
 		$aSeps[$i][$SEP_FORMULA] = ""
 		If $aParts[0] = 7 Then
-			Local $sRest = StringRegExpReplace($aParts[7], "(?i)s\d+\.pos", "")
-			If Not StringRegExp($sRest, "[^0-9\.\s\+\-\*\/\(\)]") Then $aSeps[$i][$SEP_FORMULA] = $aParts[7]
+			If Not StringRegExp(Zones_FormulaStripTokens($aParts[7]), "[^0-9\.\s\+\-\*\/\(\)]") Then _
+					$aSeps[$i][$SEP_FORMULA] = $aParts[7]
 		EndIf
 
 		If $iId > $iMaxId Then $iMaxId = $iId
@@ -199,6 +199,7 @@ Func ProjectIO_LoadFrom($sPath)
 	; --- Tout est valide : remplacement du projet courant ---
 	$g_aPrjBox = $aBox
 	$g_aPrjLayers = $aLayers
+	Project_BoxSetOrg(0, 0) ; l'origine n'est jamais persistée (invariant)
 	Project_SepReset()
 	ReDim $g_aPrjSeps[$iCount][$SEP_FIELD_COUNT]
 	For $i = 0 To $iCount - 1

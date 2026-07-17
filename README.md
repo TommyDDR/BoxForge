@@ -41,9 +41,11 @@ bas à gauche** (axe Y vers le haut).
 - **Clic gauche / droit** sur un séparateur : sélection (le groupe entier suit)
 - **Glisser** un séparateur : déplacement temps réel, clampé (écart minimal
   10 mm avec parois et séparateurs, jamais hors de sa sous-zone)
-- **Glisser un bord de la boîte** : redimensionnement (le bord opposé reste
-  fixe, la boîte est ré-ancrée en 0,0 ; le contenu reste solidaire du bord
-  fixe et est clampé dans le nouvel intérieur)
+- **Glisser un bord de la boîte** : redimensionnement — le bord suit le
+  curseur (coordonnées négatives permises pendant la manipulation), le bord
+  opposé et le contenu restent fixes ; au relâchement, la boîte est recalée
+  en (0,0) et la caméra compensée : visuellement c'est la grille qui se
+  recale, pas la boîte. **Glisser un coin** : largeur et longueur à la fois.
 - **Molette** : zoom centré sur le curseur — **Bouton du milieu** : pan
 - **Suppr** : supprimer la sélection — **Échap** : désélectionner
 - Panneau droit : propriétés de la boîte, du layer actif et du séparateur
@@ -60,12 +62,18 @@ déplacement (drag du pilote, redimensionnement de la boîte…) et ne se
 déplace plus directement — effacer la formule (saisir un nombre) le libère.
 
 - Opérateurs : `+ - * / ( )`, nombres décimaux, jetons `sN.pos`.
+- Variables boîte (dimensions **intérieures**) : `w`/`b.w` (largeur − 2×ép.),
+  `l`/`b.l` (longueur − 2×ép.), `h`/`b.h` (hauteur − fond), `t`/`b.t`
+  (épaisseur). Exemple : `w / 2 + t`.
 - Les chaînes de dépendances sont propagées en ordre topologique ; les
   références circulaires sont refusées à la saisie.
 - Les contraintes restent souveraines : une formule ne peut ni violer
   l'écart minimal de 10 mm, ni faire traverser un autre séparateur — la
   position est clampée au plus proche possible.
 - Les segments d'un groupe SHIFT partagent la formule (objet unique).
+
+Toutes les valeurs (positions, dimensions) sont arrondies au centième de
+millimètre.
 
 ## Format de projet (.bfp)
 

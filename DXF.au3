@@ -178,10 +178,8 @@ EndFunc   ;==>_DXF_CornerFingerIntervals
 Func _DXF_BuildRuns()
 	ReDim $g_aDxfRuns[0][$DXFRUN_FIELD_COUNT]
 
-	Local $fIx1 = Box_InteriorX($g_aPrjBox)
-	Local $fIy1 = Box_InteriorY($g_aPrjBox)
-	Local $fIx2 = $fIx1 + Box_InteriorW($g_aPrjBox)
-	Local $fIy2 = $fIy1 + Box_InteriorH($g_aPrjBox)
+	Local $fIx1, $fIy1, $fIx2, $fIy2
+	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2) ; origine toujours (0,0) à l'export
 
 	Local $iCount = Project_SepCount()
 	Local $iFlagSize = ($iCount > 0) ? $iCount : 1 ; un subscript ne peut pas être une expression ternaire
