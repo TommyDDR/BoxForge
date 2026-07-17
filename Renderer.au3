@@ -298,11 +298,12 @@ EndFunc   ;==>Renderer_PickGridStep
 Func Renderer_DrawGrid()
 	Local $fStep = Renderer_PickGridStep()
 
-	; Bornes monde visibles.
+	; Bornes monde visibles. Axe Y inversé : le bas de l'écran porte le Y
+	; monde MINIMAL — on itère toujours du min vers le max.
 	Local $fLeft = Camera_ScreenToWorldX(0)
 	Local $fRight = Camera_ScreenToWorldX($g_iRdrW)
-	Local $fTop = Camera_ScreenToWorldY(0)
-	Local $fBottom = Camera_ScreenToWorldY($g_iRdrH)
+	Local $fYMin = Camera_ScreenToWorldY($g_iRdrH)
+	Local $fYMax = Camera_ScreenToWorldY(0)
 
 	Local $hPen
 
@@ -316,8 +317,8 @@ Func Renderer_DrawGrid()
 	WEnd
 
 	; Lignes horizontales.
-	Local $fY = Floor($fTop / $fStep) * $fStep
-	While $fY <= $fBottom
+	Local $fY = Floor($fYMin / $fStep) * $fStep
+	While $fY <= $fYMax
 		Local $iPy = Camera_WorldToScreenY($fY)
 		$hPen = (Mod(Camera_RoundSigned($fY / $fStep), 10) = 0) ? $g_hRdrPenGridMajor : $g_hRdrPenGridMinor
 		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, 0, $iPy, $g_iRdrW, $iPy, $hPen)
@@ -329,7 +330,7 @@ Func Renderer_DrawGrid()
 		Local $iAxisX = Camera_WorldToScreenX(0)
 		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, $iAxisX, 0, $iAxisX, $g_iRdrH, $g_hRdrPenAxis)
 	EndIf
-	If $fTop <= 0 And $fBottom >= 0 Then
+	If $fYMin <= 0 And $fYMax >= 0 Then
 		Local $iAxisY = Camera_WorldToScreenY(0)
 		_GDIPlus_GraphicsDrawLine($g_hRdrGfx, 0, $iAxisY, $g_iRdrW, $iAxisY, $g_hRdrPenAxis)
 	EndIf
@@ -343,9 +344,11 @@ EndFunc   ;==>Renderer_DrawGrid
 ; -----------------------------------------------------------------------------
 Func Renderer_DrawWorldRect($fXmm, $fYmm, $fWmm, $fHmm, $hBrush, $hPen)
 	Local $iX0 = Camera_WorldToScreenX($fXmm)
-	Local $iY0 = Camera_WorldToScreenY($fYmm)
 	Local $iX1 = Camera_WorldToScreenX($fXmm + $fWmm)
-	Local $iY1 = Camera_WorldToScreenY($fYmm + $fHmm)
+	; Axe Y inversé à l'affichage : le haut écran du rectangle correspond au
+	; Y monde le plus GRAND ($fYmm + $fHmm).
+	Local $iY0 = Camera_WorldToScreenY($fYmm + $fHmm)
+	Local $iY1 = Camera_WorldToScreenY($fYmm)
 	; Taille écran minimale de 1 px : une dimension monde non nulle reste
 	; toujours visible, même très dézoomée (cf. pratiques §6, Render_ScaledSize).
 	Local $iW = $iX1 - $iX0

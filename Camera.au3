@@ -14,9 +14,12 @@
 ;     pour x négatif — deux couches dessinées via deux chemins d'arrondi
 ;     différents divergeraient d'1 px (cf. pratiques §6, piège Int()).
 ;
-; Repère : vue de dessus du tiroir. X monde → droite écran, Y monde → bas
-; écran. Le point ($g_fCamCenterX, $g_fCamCenterY) est affiché au centre du
-; viewport.
+; Repère : vue de dessus du tiroir. X monde → droite écran, Y monde → HAUT
+; écran (axe Y inversé à l'affichage : l'origine monde (0,0) apparaît en bas
+; à gauche, comme en géométrie). Le point ($g_fCamCenterX, $g_fCamCenterY)
+; est affiché au centre du viewport.
+; Cette inversion vit UNIQUEMENT ici : modèle, métier et DXF restent en
+; coordonnées monde ; le rendu et la souris passent par ces conversions.
 ; =============================================================================
 
 ; --- Limites et pas du zoom ---
@@ -60,7 +63,8 @@ Func Camera_WorldToScreenX($fXmm)
 EndFunc   ;==>Camera_WorldToScreenX
 
 Func Camera_WorldToScreenY($fYmm)
-	Return Camera_RoundSigned(($fYmm - $g_fCamCenterY) * $g_fCamZoom + $g_iCamViewH / 2)
+	; Axe inversé : un Y monde plus grand est plus HAUT à l'écran.
+	Return Camera_RoundSigned(($g_fCamCenterY - $fYmm) * $g_fCamZoom + $g_iCamViewH / 2)
 EndFunc   ;==>Camera_WorldToScreenY
 
 ; --- Conversions écran (px) → monde (mm, flottant) ---------------------------
@@ -69,7 +73,8 @@ Func Camera_ScreenToWorldX($iPx)
 EndFunc   ;==>Camera_ScreenToWorldX
 
 Func Camera_ScreenToWorldY($iPx)
-	Return ($iPx - $g_iCamViewH / 2) / $g_fCamZoom + $g_fCamCenterY
+	; Inverse exact de Camera_WorldToScreenY (axe inversé).
+	Return $g_fCamCenterY - ($iPx - $g_iCamViewH / 2) / $g_fCamZoom
 EndFunc   ;==>Camera_ScreenToWorldY
 
 ; Longueur mm → pixels (flottant, non snappé : à snapper au point d'usage).
@@ -93,7 +98,7 @@ Func Camera_ZoomAt($iScreenX, $iScreenY, $iSteps)
 
 	; Recale le centre pour que ($fWorldX, $fWorldY) reste sous le curseur.
 	$g_fCamCenterX = $fWorldX - ($iScreenX - $g_iCamViewW / 2) / $g_fCamZoom
-	$g_fCamCenterY = $fWorldY - ($iScreenY - $g_iCamViewH / 2) / $g_fCamZoom
+	$g_fCamCenterY = $fWorldY + ($iScreenY - $g_iCamViewH / 2) / $g_fCamZoom ; axe Y inversé
 EndFunc   ;==>Camera_ZoomAt
 
 ; -----------------------------------------------------------------------------
@@ -102,7 +107,7 @@ EndFunc   ;==>Camera_ZoomAt
 ; -----------------------------------------------------------------------------
 Func Camera_PanByPixels($iDxPx, $iDyPx)
 	$g_fCamCenterX = $g_fCamCenterX - $iDxPx / $g_fCamZoom
-	$g_fCamCenterY = $g_fCamCenterY - $iDyPx / $g_fCamZoom
+	$g_fCamCenterY = $g_fCamCenterY + $iDyPx / $g_fCamZoom ; axe Y inversé
 EndFunc   ;==>Camera_PanByPixels
 
 ; -----------------------------------------------------------------------------
