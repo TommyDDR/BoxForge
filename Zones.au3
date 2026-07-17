@@ -367,16 +367,19 @@ Func _Zones_SetGroupPos($iRow, $fPos)
 EndFunc   ;==>_Zones_SetGroupPos
 
 ; -----------------------------------------------------------------------------
-; Déplacement métier d'un séparateur (par identifiant) vers $fTarget (mm).
+; PRIMITIVE de déplacement d'un séparateur (par identifiant) vers $fTarget.
+; C'est le SEUL chemin qui change une position : le drag, la saisie directe,
+; les groupes SHIFT et la propagation des formules passent tous par ici.
 ; - Clampé en continu dans la plage autorisée (sous-zone + marge 10 mm) ;
 ; - groupe-aware : tous les segments liés bougent d'un bloc ;
 ; - AVANCE PAR PETITS PAS avec recalcul des sous-zones à chaque pas : la
 ;   topologie évolue continûment (les portées des séparateurs perpendiculaires
 ;   s'ajustent au fur et à mesure), même pour une grande distance demandée
-;   d'un coup (saisie directe d'une position dans le panneau Propriétés).
+;   d'un coup (saisie directe, formule).
+; NE propage PAS les formules (voir Metier_MoveSeparator / ApplyFormulas).
 ; Retourne True si la position a effectivement changé.
 ; -----------------------------------------------------------------------------
-Func Metier_MoveSeparator($iId, $fTarget)
+Func _Metier_MoveOne($iId, $fTarget)
 	Local $iRow = Project_SepFindById($iId)
 	If $iRow = -1 Then Return False
 
@@ -398,7 +401,270 @@ Func Metier_MoveSeparator($iId, $fTarget)
 		$bMoved = True
 	Next
 	Return $bMoved
+EndFunc   ;==>_Metier_MoveOne
+
+; -----------------------------------------------------------------------------
+; Déplacement UTILISATEUR d'un séparateur : refusé si sa position est pilotée
+; par une formule (le séparateur est verrouillé — effacer la formule pour le
+; libérer) ; sinon déplacement clampé ENTRELACÉ avec la propagation des
+; formules : un séparateur piloté qui borne le pilote s'écarte en suivant sa
+; formule, et le pilote peut alors continuer — le pilote "pousse" ses pilotés
+; jusqu'à la cible ou jusqu'à un vrai blocage (paroi, séparateur libre).
+; -----------------------------------------------------------------------------
+Func Metier_MoveSeparator($iId, $fTarget)
+	Local $iRow = Project_SepFindById($iId)
+	If $iRow = -1 Then Return False
+	If Project_SepGet($iRow, $SEP_FORMULA) <> "" Then Return False ; piloté
+
+	; Met d'abord les pilotés à leur place : l'un d'eux peut être collé au
+	; pilote alors que sa formule l'attend plus loin (il libère le passage).
+	Metier_ApplyFormulas()
+
+	Local $bMoved = False
+	For $iGuard = 1 To 100
+		If Not _Metier_MoveOne($iId, $fTarget) Then ExitLoop ; plus aucun progrès
+		$bMoved = True
+		Metier_ApplyFormulas() ; les pilotés suivent / s'écartent
+
+		$iRow = Project_SepFindById($iId)
+		If Abs(Project_SepGet($iRow, $SEP_POS) - $fTarget) <= $ZONES_EPS Then ExitLoop
+	Next
+	Return $bMoved
 EndFunc   ;==>Metier_MoveSeparator
+
+; =============================================================================
+; FORMULES DE POSITION
+;
+; Une position peut être PILOTÉE par une formule arithmétique référençant
+; d'autres séparateurs par identifiant : "s1.pos + 20" (insensible à la
+; casse). Caractères autorisés : chiffres, point décimal, espaces, + - * /
+; ( ) et jetons sN.pos — rien d'autre (l'évaluation refuse tout le reste :
+; aucune injection possible via Execute).
+;
+; Un séparateur piloté ne se déplace plus à la souris ni à la saisie ; il
+; suit ses références (clampé par les contraintes habituelles). La
+; propagation évalue les formules en ordre de dépendances ; les références
+; circulaires sont refusées à la saisie, et une formule devenue inévaluable
+; (référence supprimée) laisse simplement la position en l'état.
+; Les segments d'un groupe SHIFT partagent la même formule (objet unique).
+; =============================================================================
+
+; Identifiants référencés par une formule (tableau de nombres, peut être vide).
+Func _Zones_FormulaRefs($sFormula, ByRef $aIds)
+	Local $aM = StringRegExp($sFormula, "(?i)s(\d+)\.pos", 3)
+	If @error Then
+		ReDim $aIds[0]
+		Return 0
+	EndIf
+	ReDim $aIds[UBound($aM)]
+	For $i = 0 To UBound($aM) - 1
+		$aIds[$i] = Int(Number($aM[$i]))
+	Next
+	Return UBound($aIds)
+EndFunc   ;==>_Zones_FormulaRefs
+
+; -----------------------------------------------------------------------------
+; Évalue une formule. Retourne True et pose $fOut, ou False si la formule est
+; inévaluable (référence absente, syntaxe, caractère interdit).
+; -----------------------------------------------------------------------------
+Func _Zones_FormulaEval($sFormula, ByRef $fOut)
+	; Substitution des jetons par la position courante de leur séparateur.
+	Local $aIds[0]
+	_Zones_FormulaRefs($sFormula, $aIds)
+	Local $sExpr = $sFormula
+	For $i = 0 To UBound($aIds) - 1
+		Local $iRow = Project_SepFindById($aIds[$i])
+		If $iRow = -1 Then Return False
+		$sExpr = StringRegExpReplace($sExpr, "(?i)s" & $aIds[$i] & "\.pos", _
+				StringFormat("%.6f", Project_SepGet($iRow, $SEP_POS)))
+	Next
+
+	; Défense en profondeur : expression purement arithmétique, sinon refus
+	; (Execute est puissant — on ne lui passe JAMAIS de texte non filtré).
+	If Not StringRegExp($sExpr, "^[0-9\.\s\+\-\*\/\(\)]+$") Then Return False
+
+	Local $vResult = Execute($sExpr)
+	If @error Or Not IsNumber($vResult) Then Return False
+	$fOut = $vResult
+	Return True
+EndFunc   ;==>_Zones_FormulaEval
+
+; Ensemble "soi-même" pour la détection de cycle : le segment et tous les
+; co-membres de son groupe (ils partagent position et formule).
+Func _Zones_SelfIds($iId, ByRef $aSelf)
+	ReDim $aSelf[1]
+	$aSelf[0] = $iId
+	Local $iRow = Project_SepFindById($iId)
+	If $iRow = -1 Then Return
+	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
+	If $iGroup = $SEP_NO_GROUP Then Return
+	For $i = 0 To Project_SepCount() - 1
+		If Project_SepGet($i, $SEP_GROUP) = $iGroup And Project_SepGet($i, $SEP_ID) <> $iId Then
+			ReDim $aSelf[UBound($aSelf) + 1]
+			$aSelf[UBound($aSelf) - 1] = Project_SepGet($i, $SEP_ID)
+		EndIf
+	Next
+EndFunc   ;==>_Zones_SelfIds
+
+Func _Zones_IdInList($iId, ByRef $aList)
+	For $i = 0 To UBound($aList) - 1
+		If $aList[$i] = $iId Then Return True
+	Next
+	Return False
+EndFunc   ;==>_Zones_IdInList
+
+; Parcours des dépendances : True si, en suivant les formules existantes
+; depuis $sFormula, on retombe sur $iSelfId (ou un co-membre de son groupe).
+Func _Zones_FormulaReachesSelf($sFormula, $iSelfId)
+	Local $aSelf[0]
+	_Zones_SelfIds($iSelfId, $aSelf)
+
+	Local $aStack[0], $aVisited[0]
+	_Zones_FormulaRefs($sFormula, $aStack)
+
+	While UBound($aStack) > 0
+		Local $iId = $aStack[UBound($aStack) - 1]
+		ReDim $aStack[UBound($aStack) - 1]
+
+		If _Zones_IdInList($iId, $aSelf) Then Return True
+		If _Zones_IdInList($iId, $aVisited) Then ContinueLoop
+		ReDim $aVisited[UBound($aVisited) + 1]
+		$aVisited[UBound($aVisited) - 1] = $iId
+
+		Local $iRow = Project_SepFindById($iId)
+		If $iRow = -1 Then ContinueLoop
+		Local $aRefs[0]
+		_Zones_FormulaRefs(Project_SepGet($iRow, $SEP_FORMULA), $aRefs)
+		For $i = 0 To UBound($aRefs) - 1
+			ReDim $aStack[UBound($aStack) + 1]
+			$aStack[UBound($aStack) - 1] = $aRefs[$i]
+		Next
+	WEnd
+	Return False
+EndFunc   ;==>_Zones_FormulaReachesSelf
+
+; -----------------------------------------------------------------------------
+; Validation d'une formule pour le séparateur $iSelfId.
+; Retourne "" si acceptable, sinon un message d'erreur pour l'utilisateur.
+; -----------------------------------------------------------------------------
+Func Metier_FormulaValidate($sFormula, $iSelfId)
+	If $sFormula = "" Then Return "" ; effacement : toujours permis
+
+	; Caractères : une fois les jetons retirés, seule l'arithmétique reste.
+	Local $sRest = StringRegExpReplace($sFormula, "(?i)s\d+\.pos", "")
+	If StringRegExp($sRest, "[^0-9\.\s\+\-\*\/\(\)]") Then _
+			Return "Caractères non autorisés. Attendu : nombres, + - * / ( ) et sN.pos (ex : s1.pos + 20)."
+
+	; Références existantes ?
+	Local $aIds[0]
+	_Zones_FormulaRefs($sFormula, $aIds)
+	For $i = 0 To UBound($aIds) - 1
+		If Project_SepFindById($aIds[$i]) = -1 Then _
+				Return "Séparateur s" & $aIds[$i] & " introuvable."
+	Next
+
+	; Auto-référence / cycle (le groupe compte comme soi-même).
+	If _Zones_FormulaReachesSelf($sFormula, $iSelfId) Then _
+			Return "Référence circulaire : cette formule dépend (directement ou non) de ce séparateur."
+
+	; Évaluation à blanc.
+	Local $fVal
+	If Not _Zones_FormulaEval($sFormula, $fVal) Then Return "Formule invalide."
+	Return ""
+EndFunc   ;==>Metier_FormulaValidate
+
+; -----------------------------------------------------------------------------
+; Pose (ou efface : "") la formule de position d'un séparateur — et de tous
+; les segments de son groupe —, puis propage. Retourne "" ou le message
+; d'erreur de validation (dans ce cas rien n'est modifié).
+; -----------------------------------------------------------------------------
+Func Metier_SetSeparatorFormula($iId, $sFormula)
+	Local $iRow = Project_SepFindById($iId)
+	If $iRow = -1 Then Return "Séparateur introuvable."
+
+	Local $sErr = Metier_FormulaValidate($sFormula, $iId)
+	If $sErr <> "" Then Return $sErr
+
+	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
+	For $i = 0 To Project_SepCount() - 1
+		If $i = $iRow Or ($iGroup <> $SEP_NO_GROUP And Project_SepGet($i, $SEP_GROUP) = $iGroup) Then
+			Project_SepSet($i, $SEP_FORMULA, $sFormula)
+		EndIf
+	Next
+
+	Metier_ApplyFormulas()
+	Return ""
+EndFunc   ;==>Metier_SetSeparatorFormula
+
+; -----------------------------------------------------------------------------
+; Propagation : évalue toutes les formules en ordre de dépendances, et
+; RÉPÈTE jusqu'à stabilisation. La répétition est nécessaire quand des
+; séparateurs se bornent mutuellement pendant le mouvement : chaque passe
+; les rapproche de leur cible (celui qui bloque s'écarte à la passe
+; suivante), jusqu'au point fixe.
+; Chaque application passe par la primitive de déplacement clampé : une
+; formule ne peut JAMAIS violer les contraintes (écart 10 mm, sous-zone).
+; Les formules inévaluables et les cycles résiduels laissent la position
+; en l'état.
+; -----------------------------------------------------------------------------
+Func Metier_ApplyFormulas()
+	For $iPass = 1 To 100 ; garde-fou (chaînes pathologiques)
+		If Not _Metier_ApplyFormulasPass() Then ExitLoop
+	Next
+EndFunc   ;==>Metier_ApplyFormulas
+
+; Une passe complète d'évaluation. Retourne True si au moins une position
+; a effectivement changé (une passe supplémentaire est alors utile).
+Func _Metier_ApplyFormulasPass()
+	Local $iCount = Project_SepCount()
+	If $iCount = 0 Then Return False
+	Local $bChanged = False
+	Local $aResolved[$iCount]
+
+	; Résolus d'office : les séparateurs à position libre.
+	For $i = 0 To $iCount - 1
+		$aResolved[$i] = (Project_SepGet($i, $SEP_FORMULA) = "")
+	Next
+
+	; Passes successives jusqu'à stabilité (ordre topologique implicite).
+	Local $bProgress = True
+	While $bProgress
+		$bProgress = False
+		For $i = 0 To $iCount - 1
+			If $aResolved[$i] Then ContinueLoop
+
+			; Toutes les références sont-elles résolues ?
+			Local $aIds[0]
+			_Zones_FormulaRefs(Project_SepGet($i, $SEP_FORMULA), $aIds)
+			Local $bReady = True
+			For $j = 0 To UBound($aIds) - 1
+				Local $iRefRow = Project_SepFindById($aIds[$j])
+				If $iRefRow = -1 Then ContinueLoop ; référence morte : évaluation échouera proprement
+				If Not $aResolved[$iRefRow] Then
+					$bReady = False
+					ExitLoop
+				EndIf
+			Next
+			If Not $bReady Then ContinueLoop
+
+			; Évaluation puis déplacement clampé (le groupe entier suit).
+			Local $fTarget
+			If _Zones_FormulaEval(Project_SepGet($i, $SEP_FORMULA), $fTarget) Then
+				If _Metier_MoveOne(Project_SepGet($i, $SEP_ID), $fTarget) Then $bChanged = True
+			EndIf
+
+			; Le segment et ses co-membres de groupe sont stabilisés.
+			Local $iGroup = Project_SepGet($i, $SEP_GROUP)
+			For $j = 0 To $iCount - 1
+				If $j = $i Or ($iGroup <> $SEP_NO_GROUP And Project_SepGet($j, $SEP_GROUP) = $iGroup) Then
+					$aResolved[$j] = True
+				EndIf
+			Next
+			$bProgress = True
+		Next
+	WEnd
+	Return $bChanged
+EndFunc   ;==>_Metier_ApplyFormulasPass
 
 ; -----------------------------------------------------------------------------
 ; Suppression métier : un séparateur groupé emporte TOUT son groupe (les
@@ -518,4 +784,5 @@ Func Metier_OnBoxChanged()
 	Next
 
 	Zones_Rebuild()
+	Metier_ApplyFormulas() ; les positions ont pu être clampées/décalées
 EndFunc   ;==>Metier_OnBoxChanged

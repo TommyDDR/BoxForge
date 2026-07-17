@@ -25,6 +25,12 @@
 ;   - Layer  : index du layer (0..29) — matériau du séparateur.
 ;   - Span1/Span2 : portée du segment (mm). DONNÉE DÉRIVÉE, recalculée par
 ;              Zones_Rebuild : jamais modifiée directement ailleurs.
+;   - Formula : formule de position optionnelle ("" = position libre).
+;              Exemple : "s1.pos + 20" → ce séparateur est PILOTÉ : sa
+;              position suit celle du séparateur d'identifiant 1, plus
+;              20 mm. Évaluée par le métier (Zones.au3) après chaque
+;              mutation ; un séparateur piloté ne se déplace plus à la
+;              souris. Les segments d'un groupe partagent la formule.
 ;
 ; Toutes les valeurs sont en millimètres.
 ; =============================================================================
@@ -38,6 +44,7 @@ Global Enum $SEP_ID, _         ; identifiant unique (entier > 0)
 		$SEP_LAYER, _          ; index du layer (0..29)
 		$SEP_SPAN1, _          ; début de portée (mm) — dérivé
 		$SEP_SPAN2, _          ; fin de portée (mm) — dérivé
+		$SEP_FORMULA, _        ; formule de position ("" = libre)
 		$SEP_FIELD_COUNT       ; nombre de champs
 
 ; --- Orientations ---

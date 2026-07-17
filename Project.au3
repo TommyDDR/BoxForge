@@ -113,6 +113,7 @@ Func Project_SepAdd($iGroup, $iOrient, $fPos, $fAnchor, $iLayer)
 	$g_aPrjSeps[$iRow][$SEP_LAYER] = $iLayer
 	$g_aPrjSeps[$iRow][$SEP_SPAN1] = $fPos
 	$g_aPrjSeps[$iRow][$SEP_SPAN2] = $fPos
+	$g_aPrjSeps[$iRow][$SEP_FORMULA] = "" ; position libre par défaut
 	$g_iPrjSepNextId += 1
 	Return $g_aPrjSeps[$iRow][$SEP_ID]
 EndFunc   ;==>Project_SepAdd

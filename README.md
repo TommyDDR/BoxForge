@@ -32,18 +32,40 @@ uniquement sur dirty flag.
 
 ## Contrôles
 
+L'affichage utilise un repère mathématique : l'origine monde (0,0) est **en
+bas à gauche** (axe Y vers le haut).
+
 - **Clic gauche** dans une sous-zone : créer un séparateur vertical
   (**CTRL** : horizontal, **SHIFT** : global — traverse toutes les sous-zones,
   segments liés en groupe se comportant comme un seul objet)
 - **Clic gauche / droit** sur un séparateur : sélection (le groupe entier suit)
 - **Glisser** un séparateur : déplacement temps réel, clampé (écart minimal
   10 mm avec parois et séparateurs, jamais hors de sa sous-zone)
+- **Glisser un bord de la boîte** : redimensionnement (le bord opposé reste
+  fixe, la boîte est ré-ancrée en 0,0 ; le contenu reste solidaire du bord
+  fixe et est clampé dans le nouvel intérieur)
 - **Molette** : zoom centré sur le curseur — **Bouton du milieu** : pan
 - **Suppr** : supprimer la sélection — **Échap** : désélectionner
 - Panneau droit : propriétés de la boîte, du layer actif et du séparateur
   sélectionné (position saisissable, layer, longueur, groupe)
 - Panneau bas : les 30 layers (couleur, épaisseur, hauteur, créneaux) ;
   la ligne sélectionnée est le layer des nouveaux séparateurs
+
+### Formules de position
+
+Le champ **Position** d'un séparateur accepte un nombre… ou une **formule**
+référençant d'autres séparateurs par identifiant : `s1.pos + 20`. Le
+séparateur devient alors **piloté** : il suit ses références à chaque
+déplacement (drag du pilote, redimensionnement de la boîte…) et ne se
+déplace plus directement — effacer la formule (saisir un nombre) le libère.
+
+- Opérateurs : `+ - * / ( )`, nombres décimaux, jetons `sN.pos`.
+- Les chaînes de dépendances sont propagées en ordre topologique ; les
+  références circulaires sont refusées à la saisie.
+- Les contraintes restent souveraines : une formule ne peut ni violer
+  l'écart minimal de 10 mm, ni faire traverser un autre séparateur — la
+  position est clampée au plus proche possible.
+- Les segments d'un groupe SHIFT partagent la formule (objet unique).
 
 ## Format de projet (.bfp)
 

@@ -86,12 +86,15 @@ Func ProjectIO_SaveTo($sPath)
 	$s &= "NextId=" & $g_iPrjSepNextId & @CRLF
 	$s &= "NextGroup=" & $g_iPrjSepNextGroup & @CRLF
 	For $i = 0 To Project_SepCount() - 1
+		; La formule est en dernière position ; ses caractères autorisés
+		; excluent "|" et les sauts de ligne (validée à la saisie).
 		$s &= "S" & $i & "=" & Project_SepGet($i, $SEP_ID) _
 				 & "|" & Project_SepGet($i, $SEP_GROUP) _
 				 & "|" & Project_SepGet($i, $SEP_ORIENT) _
 				 & "|" & Project_SepGet($i, $SEP_POS) _
 				 & "|" & Project_SepGet($i, $SEP_ANCHOR) _
-				 & "|" & Project_SepGet($i, $SEP_LAYER) & @CRLF
+				 & "|" & Project_SepGet($i, $SEP_LAYER) _
+				 & "|" & Project_SepGet($i, $SEP_FORMULA) & @CRLF
 	Next
 
 	Local $hFile = FileOpen($sPath, 2) ; écrasement
@@ -162,7 +165,8 @@ Func ProjectIO_LoadFrom($sPath)
 	Local $iMaxId = 0, $iMaxGroup = 0
 	For $i = 0 To $iCount - 1
 		$aParts = StringSplit(IniRead($sPath, "Separators", "S" & $i, ""), "|")
-		If $aParts[0] <> 6 Then Return False
+		; 6 parts : ancien format (sans formule) ; 7 : format courant.
+		If $aParts[0] <> 6 And $aParts[0] <> 7 Then Return False
 
 		Local $iId = Int(Number($aParts[1]))
 		Local $iGroup = Int(Number($aParts[2]))
@@ -180,6 +184,13 @@ Func ProjectIO_LoadFrom($sPath)
 		$aSeps[$i][$SEP_LAYER] = $iLayer
 		$aSeps[$i][$SEP_SPAN1] = 0 ; dérivé : recalculé par Zones_Rebuild
 		$aSeps[$i][$SEP_SPAN2] = 0
+		; Formule : uniquement si ses caractères sont sûrs (défense en
+		; profondeur avant toute évaluation), sinon position libre.
+		$aSeps[$i][$SEP_FORMULA] = ""
+		If $aParts[0] = 7 Then
+			Local $sRest = StringRegExpReplace($aParts[7], "(?i)s\d+\.pos", "")
+			If Not StringRegExp($sRest, "[^0-9\.\s\+\-\*\/\(\)]") Then $aSeps[$i][$SEP_FORMULA] = $aParts[7]
+		EndIf
 
 		If $iId > $iMaxId Then $iMaxId = $iId
 		If $iGroup > $iMaxGroup Then $iMaxGroup = $iGroup
@@ -204,7 +215,10 @@ Func ProjectIO_LoadFrom($sPath)
 	If $g_iPrjSepNextGroup <= $iMaxGroup Then $g_iPrjSepNextGroup = $iMaxGroup + 1
 
 	; Recalcul des données dérivées : recrée exactement l'état du projet.
+	; Les positions sauvegardées satisfont déjà les formules ; la propagation
+	; est relancée par sécurité (fichier édité à la main, anciennes versions).
 	Zones_Rebuild()
+	Metier_ApplyFormulas()
 
 	$g_sIoProjectPath = $sPath
 	Return True

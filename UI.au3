@@ -81,7 +81,8 @@ Global $g_idUiBtnApplyLayer     = 0
 ; recensés dans $g_aidUiSepCtrls pour être montrés/masqués d'un bloc.
 Global $g_aidUiSepCtrls[0]
 Global $g_idUiSepTitle       = 0 ; "Séparateur #n (vertical)"
-Global $g_idUiSepPosInput    = 0 ; position (éditable : saisie directe clampée)
+Global $g_idUiSepPosInput    = 0 ; position : nombre OU formule "s1.pos + 20"
+Global $g_idUiSepPosEff      = 0 ; position effective calculée (lecture seule)
 Global $g_idUiSepLenValue    = 0 ; longueur (dérivée, lecture seule)
 Global $g_idUiSepLayerCombo  = 0 ; layer du séparateur (éditable)
 Global $g_idUiSepGroupValue  = 0 ; groupe SHIFT éventuel
@@ -309,9 +310,10 @@ Func UI_CreateSeparatorSection($iYStart)
 
 	Local $iY = $iYStart + 26
 
-	; Position : saisissable — la valeur appliquée est clampée par le métier
-	; (sous-zone + écart minimal), puis réaffichée telle qu'acceptée.
-	Local $idPosLabel = GUICtrlCreateLabel("Position (mm)", 12, $iY + 3, 136, 18)
+	; Position : saisissable — un NOMBRE (clampé par le métier) ou une
+	; FORMULE référençant d'autres séparateurs, ex : "s1.pos + 20" (le
+	; séparateur devient alors piloté et suit ses références).
+	Local $idPosLabel = GUICtrlCreateLabel("Position (mm / formule)", 12, $iY + 3, 136, 18)
 	GUICtrlSetColor($idPosLabel, $UI_COLOR_TEXT_DIM)
 	GUICtrlSetBkColor($idPosLabel, $GUI_BKCOLOR_TRANSPARENT)
 	UI_TrackSepCtrl($idPosLabel)
@@ -319,6 +321,7 @@ Func UI_CreateSeparatorSection($iYStart)
 	UI_TrackSepCtrl($g_idUiSepPosInput)
 	$iY += 28
 
+	$g_idUiSepPosEff = UI_CreateSepValueRow("Pos. effective (mm)", $iY)
 	$g_idUiSepLenValue = UI_CreateSepValueRow("Longueur (mm)", $iY)
 	$g_idUiSepGroupValue = UI_CreateSepValueRow("Groupe", $iY)
 
@@ -396,19 +399,41 @@ EndFunc   ;==>UI_RefreshSeparatorSection
 
 ; Rafraîchit uniquement position et longueur (appelé à chaque pas de drag :
 ; on ne retouche pas les autres contrôles, ni la combo).
+; Le champ Position montre la FORMULE quand le séparateur est piloté ; la
+; position calculée est toujours visible dans "Pos. effective".
 Func UI_RefreshSeparatorPosition()
 	Local $iRow = Selection_HasSelection() ? Project_SepFindById(Selection_GetId()) : -1
 	If $iRow = -1 Then Return
-	GUICtrlSetData($g_idUiSepPosInput, StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)))
+	Local $sFormula = Project_SepGet($iRow, $SEP_FORMULA)
+	GUICtrlSetData($g_idUiSepPosInput, ($sFormula = "") _
+			 ? StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)) : $sFormula)
+	GUICtrlSetData($g_idUiSepPosEff, StringFormat("%.1f", Project_SepGet($iRow, $SEP_POS)))
 	GUICtrlSetData($g_idUiSepLenValue, StringFormat("%.1f", Project_SepLength($iRow)))
 EndFunc   ;==>UI_RefreshSeparatorPosition
 
-; Applique la position saisie au séparateur sélectionné : le métier clampe
-; (sous-zone + écart 10 mm) et déplace le groupe entier ; la valeur réellement
-; acceptée est réaffichée.
+; Applique la saisie du champ Position au séparateur sélectionné :
+;   - un NOMBRE : position libre (efface une éventuelle formule) puis
+;     déplacement clampé par le métier ;
+;   - autre chose : une FORMULE (validée : syntaxe, références, cycles) —
+;     le séparateur devient piloté et suit ses références.
+; La valeur réellement acceptée est réaffichée.
 Func UI_ApplySeparatorPosition()
 	If Not Selection_HasSelection() Then Return
-	If Metier_MoveSeparator(Selection_GetId(), Number(GUICtrlRead($g_idUiSepPosInput))) Then UI_MarkProjectModified()
+	Local $iId = Selection_GetId()
+	Local $sInput = StringStripWS(GUICtrlRead($g_idUiSepPosInput), 3)
+
+	If StringRegExp($sInput, "^[-+]?[0-9]+([\.,][0-9]+)?$") Then
+		; Nombre pur : libère le séparateur puis le déplace.
+		Metier_SetSeparatorFormula($iId, "")
+		If Metier_MoveSeparator($iId, Number(StringReplace($sInput, ",", "."))) Then UI_MarkProjectModified()
+	Else
+		Local $sErr = Metier_SetSeparatorFormula($iId, $sInput)
+		If $sErr <> "" Then
+			MsgBox(BitOR($MB_OK, $MB_ICONWARNING), $APP_NAME, $sErr, 0, $g_hUiMainGui)
+		Else
+			UI_MarkProjectModified()
+		EndIf
+	EndIf
 	UI_RefreshSeparatorSection()
 	App_InvalidateView()
 EndFunc   ;==>UI_ApplySeparatorPosition
