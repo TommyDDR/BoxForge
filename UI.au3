@@ -15,6 +15,7 @@
 #include "Selection.au3"
 #include "Camera.au3"
 #include "ProjectIO.au3"
+#include "DXF.au3"
 
 ; =============================================================================
 ; UI.au3 — Fenêtre principale et disposition des zones (niveau 4 : UI).
@@ -158,8 +159,27 @@ Func UI_CreateMenus()
 
 	Local $idMenuGen = GUICtrlCreateMenu("&Génération")
 	$g_idUiMenuDxf = GUICtrlCreateMenuItem("Générer le DXF…", $idMenuGen)
-	GUICtrlSetState($g_idUiMenuDxf, $GUI_DISABLE) ; disponible à l'étape DXF
 EndFunc   ;==>UI_CreateMenus
+
+; -----------------------------------------------------------------------------
+; Génération DXF : demande un chemin puis délègue à l'export (niveau 5).
+; -----------------------------------------------------------------------------
+Func UI_DoExportDxf()
+	; Nom proposé : celui du projet, en .dxf.
+	Local $sDefault = StringRegExpReplace(ProjectIO_GetDisplayName(), "(?i)\." & $IO_FILE_EXT & "$", "") & ".dxf"
+	Local $sPath = FileSaveDialog("Générer le DXF", "", "Fichier DXF (*.dxf)", _
+			$FD_PATHMUSTEXIST, $sDefault, $g_hUiMainGui)
+	If @error Then Return ; annulé
+	If Not StringRegExp($sPath, "(?i)\.dxf$") Then $sPath &= ".dxf"
+
+	If DXF_Export($sPath) Then
+		MsgBox(BitOR($MB_OK, $MB_ICONINFORMATION), $APP_NAME, _
+				"DXF généré :" & @CRLF & $sPath, 0, $g_hUiMainGui)
+	Else
+		MsgBox(BitOR($MB_OK, $MB_ICONERROR), $APP_NAME, _
+				"Impossible d'écrire le fichier :" & @CRLF & $sPath, 0, $g_hUiMainGui)
+	EndIf
+EndFunc   ;==>UI_DoExportDxf
 
 ; -----------------------------------------------------------------------------
 ; Titre de la fenêtre : application, projet courant, astérisque si modifié.
@@ -573,6 +593,9 @@ Func UI_HandleGuiEvent($iMsg)
 		Case $g_idUiMenuFit
 			Camera_FitRect(0, 0, Project_BoxGet($BOX_WIDTH), Project_BoxGet($BOX_LENGTH))
 			App_InvalidateView()
+			Return True
+		Case $g_idUiMenuDxf
+			UI_DoExportDxf()
 			Return True
 		Case $g_idUiBtnApplyBox
 			UI_ApplyBoxInputs()

@@ -2,9 +2,10 @@
 
 Concepteur de boîtes de rangement sur mesure (pour tiroirs), en AutoIt + GDI+.
 
-L'application dessine le **modèle logique** d'une boîte (4 côtés, un fond,
-séparateurs verticaux/horizontaux) ; les pièces découpables sont générées
-automatiquement au format DXF. Toutes les dimensions sont en **millimètres**.
+L'application édite le **modèle logique** d'une boîte (4 côtés, un fond,
+séparateurs verticaux/horizontaux organisés en sous-zones) ; les pièces
+découpables sont générées automatiquement au format **DXF**. Toutes les
+dimensions sont en **millimètres**.
 
 ## Lancer
 
@@ -16,22 +17,55 @@ AutoIt3.exe Main.au3
 
 | Niveau | Rôle | Fichiers |
 |---|---|---|
-| 1 | Structures de données pures (aucune GDI, aucun DXF) | `Box.au3`, `Layers.au3`, `Separator.au3` |
-| 2 | Gestion métier : sous-zones, intersections, contraintes, ajout/déplacement/suppression | `Zones.au3`, `Selection.au3` |
+| 1 | Structures de données pures (aucune GDI, aucun DXF) | `Box.au3`, `Layers.au3`, `Separator.au3`, `Project.au3` (instance) |
+| 2 | Gestion métier : sous-zones, intersections, contraintes, création/déplacement/suppression, sélection | `Zones.au3`, `Selection.au3` |
 | 3 | Rendu GDI+ (n'affiche que les données, aucune logique métier) | `Renderer.au3`, `Camera.au3` |
-| 4 | Interface : fenêtre, panneaux, souris, menus | `UI.au3` |
+| 4 | Interface : fenêtre, panneaux, menus, souris/clavier | `UI.au3`, `Input.au3` |
 | 5 | Persistance et export (indépendants du renderer) | `ProjectIO.au3`, `DXF.au3` |
 
-`Util.au3` : helpers génériques (niveau 0). `Main.au3` : point d'entrée et boucle.
+`App.au3` : état transversal (dirty flags). `Main.au3` : point d'entrée et boucle.
 
-Le pipeline de rendu suit `pratiques-rendu-performant.md` (backbuffer DIB 32bpp,
-un seul blit de présentation par frame, anti-scintillement WM_ERASEBKGND,
-registre de disposers GDI+).
+Le pipeline de rendu suit `pratiques-rendu-performant.md` : backbuffer DIB 32bpp
++ memory DC, un seul BitBlt de présentation, anti-scintillement WM_ERASEBKGND,
+objets GDI+ partagés (jamais créés par frame), registre de disposers, rendu
+uniquement sur dirty flag.
 
 ## Contrôles
 
-- **Clic gauche** dans une sous-zone : créer un séparateur vertical (**CTRL** : horizontal, **SHIFT** : traversant/global)
-- **Clic gauche / droit** sur un séparateur : sélection
-- **Glisser** un séparateur : déplacement (clampé, écart minimal 10 mm)
-- **Molette** : zoom (centré sur le curseur) — **Bouton du milieu** : déplacement de la vue
-- **Suppr** : supprimer le séparateur sélectionné — **Échap** : désélectionner
+- **Clic gauche** dans une sous-zone : créer un séparateur vertical
+  (**CTRL** : horizontal, **SHIFT** : global — traverse toutes les sous-zones,
+  segments liés en groupe se comportant comme un seul objet)
+- **Clic gauche / droit** sur un séparateur : sélection (le groupe entier suit)
+- **Glisser** un séparateur : déplacement temps réel, clampé (écart minimal
+  10 mm avec parois et séparateurs, jamais hors de sa sous-zone)
+- **Molette** : zoom centré sur le curseur — **Bouton du milieu** : pan
+- **Suppr** : supprimer la sélection — **Échap** : désélectionner
+- Panneau droit : propriétés de la boîte, du layer actif et du séparateur
+  sélectionné (position saisissable, layer, longueur, groupe)
+- Panneau bas : les 30 layers (couleur, épaisseur, hauteur, créneaux) ;
+  la ligne sélectionnée est le layer des nouveaux séparateurs
+
+## Format de projet (.bfp)
+
+Fichier texte à sections, versionné. Seules les données sources sont écrites
+(boîte, layers, séparateurs, groupes, positions) ; les dérivées (sous-zones,
+portées, intersections) sont recalculées au chargement, qui recrée exactement
+le projet. Chargement défensif : un fichier invalide ne touche pas au projet
+courant.
+
+## Génération DXF (menu Génération)
+
+DXF R12 ASCII, polylignes fermées, unités mm, pièces étiquetées (layer
+`LABELS`), structure sur `STRUCTURE`, séparateurs sur `SEP_Lxx` par matière.
+
+- **Fond** : plaque W×L, encoches de pourtour pour les tenons des côtés,
+  trous au droit de chaque créneau de séparateur.
+- **Côtés** : coins à queues droites (N/S entaillés, E/O languettes),
+  tenons inférieurs traversant le fond, encoche supérieure au droit de chaque
+  séparateur (profondeur : `H ≤ h ? H/2 : H − h/2`).
+- **Séparateurs** : les segments alignés d'un groupe SHIFT sont fusionnés en
+  une pièce continue ; encoches mi-bois aux croisements (haute sur
+  l'horizontal, basse sur le vertical — `min(h,v)/2`), une seule encoche sur
+  la pièce traversée aux contacts en T ; créneaux inférieurs traversants
+  (période = longueur + espacement du layer, motif centré) ; extrémités contre
+  une paroi prolongées avec encoche de fixation basse (profondeur = hauteur/2).
