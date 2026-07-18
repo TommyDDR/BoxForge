@@ -25,7 +25,7 @@ Global Enum $LAYER_COLOR, _        ; couleur d'affichage (0xRRGGBB)
 Global Const $LAYERS_COUNT = 30
 
 ; --- Valeurs par défaut d'un layer ---
-Global Const $LAYER_DEFAULT_THICKNESS      = 4
+Global Const $LAYER_DEFAULT_THICKNESS      = 3
 Global Const $LAYER_DEFAULT_HEIGHT         = 60
 Global Const $LAYER_DEFAULT_FINGER_LEN     = 20
 Global Const $LAYER_DEFAULT_FINGER_SPACING = 40

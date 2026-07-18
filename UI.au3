@@ -2,8 +2,11 @@
 #include <GUIConstantsEx.au3>
 #include <WindowsConstants.au3>
 #include <WinAPI.au3>
+#include <WinAPISysInternals.au3>
 #include <ListViewConstants.au3>
 #include <GuiListView.au3>
+#include <GuiImageList.au3>
+#include <StaticConstants.au3>
 #include <Misc.au3>
 #include <ComboConstants.au3>
 #include <GuiComboBox.au3>
@@ -16,6 +19,7 @@
 #include "Camera.au3"
 #include "ProjectIO.au3"
 #include "DXF.au3"
+#include "Undo.au3"
 
 ; =============================================================================
 ; UI.au3 — Fenêtre principale et disposition des zones (niveau 4 : UI).
@@ -90,8 +94,14 @@ Global $g_idUiBtnSepApplyPos = 0
 Global $g_idUiBtnSepDelete   = 0
 
 ; --- Panneau du bas : liste des layers ---
-Global $g_idUiLayerList = 0
+; Deux représentations possibles (menu Affichage) : la liste détaillée
+; (colonnes + icône de couleur) ou une grille de pastilles colorées.
+Global $g_idUiLayerList     = 0
 Global $g_aidUiLayerItems[$LAYERS_COUNT]
+Global $g_hUiLayerImgList   = 0 ; imagelist des icônes de couleur (vue détaillée)
+Global $g_bUiLayerSimpleView = False
+Global $g_aidUiLayerSwatchFill[$LAYERS_COUNT]   ; pastille cliquable (couleur du layer)
+Global $g_aidUiLayerSwatchBorder[$LAYERS_COUNT] ; cadre autour de la pastille (surbrillance active)
 
 ; --- Layer actif (état d'édition UI : layer des futurs séparateurs) ---
 Global $g_iUiActiveLayer = 0
@@ -103,10 +113,47 @@ Global $g_idUiMenuSave   = 0
 Global $g_idUiMenuSaveAs = 0
 Global $g_idUiMenuQuit   = 0
 Global $g_idUiMenuFit    = 0
+Global $g_idUiMenuLayerSimpleView = 0
 Global $g_idUiMenuDxf    = 0
+Global $g_idUiMenuMainSepH = 0 ; Génération > Séparateur principal > Horizontal
+Global $g_idUiMenuMainSepV = 0 ; Génération > Séparateur principal > Vertical
+Global $g_idUiMenuUndo = 0
+Global $g_idUiMenuRedo = 0
+
+; --- Affichage > Taille des zones (réglage "menu uniquement", cf. cahier des
+;     charges) : jamais / au survol / toujours. L'état vit dans App.au3 (lu
+;     par Renderer.au3) ; le popup de survol, lui, est TOUJOURS affiché quel
+;     que soit ce mode (cf. Input_OnMouseMove). ---
+Global $g_idUiMenuZoneNever  = 0
+Global $g_idUiMenuZoneHover  = 0
+Global $g_idUiMenuZoneAlways = 0
+
+; --- Bulles d'information (popups) ---
+; Bulle de survol (canevas) : nom du séparateur/de la boîte survolé.
+; Bulle de formule (saisie Position) : traduction + résultat de la formule.
+Global $g_hUiHoverTipGui    = 0
+Global $g_idUiHoverTipLbl   = 0
+Global $g_hUiFormulaTipGui  = 0
+Global $g_idUiFormulaTipLbl = 0
+Global Const $UI_TOOLTIP_PAD_X  = 6
+Global Const $UI_TOOLTIP_PAD_Y  = 4
+Global Const $UI_TOOLTIP_LINE_H = 16
+Global Const $UI_TOOLTIP_CHAR_W = 7
 
 ; --- Demande de fermeture émise par le menu Quitter ---
 Global $g_bUiQuitRequested = False
+
+; --- Accélérateurs Haut/Bas (incrément/décrément du champ suivi actif) ---
+; Actifs UNIQUEMENT quand un champ suivi a le focus (cf. Input_OnCommand) :
+; un accélérateur, contrairement à un polling, intercepte la touche AVANT
+; qu'elle n'atteigne le contrôle Edit natif (qui sinon déplace le curseur
+; silencieusement — cf. Input_PollKeys). Hors saisie (ex. la combo Layer du
+; séparateur), Haut/Bas doivent garder leur comportement natif : la table
+; d'accélérateurs est donc reconstruite à chaque bascule plutôt que fixée une
+; fois pour toutes.
+Global $g_idUiAccelUp   = 0
+Global $g_idUiAccelDown = 0
+Global $g_bUiUpDownAccelActive = False
 
 ; -----------------------------------------------------------------------------
 ; Création de la fenêtre principale et de ses trois zones.
@@ -125,6 +172,7 @@ Func UI_Create()
 
 	UI_CreatePanelRight()
 	UI_CreatePanelBottom()
+	UI_TooltipsCreate()
 
 	; Messages fenêtre : anti-scintillement + suivi du redimensionnement.
 	GUIRegisterMsg($WM_ERASEBKGND, "UI_OnEraseBkgnd")
@@ -138,6 +186,8 @@ Func UI_Create()
 	GUISetState(@SW_SHOW, $g_hUiPanelBottomGui)
 	GUISetState(@SW_SHOW, $g_hUiMainGui)
 
+	UI_RefreshMainSepOrientMenu()
+	UI_SetZoneLabelMode(App_GetZoneLabelMode()) ; synchronise la coche (Settings_Load peut la resurcharger ensuite)
 	UI_UpdateTitle()
 EndFunc   ;==>UI_Create
 
@@ -147,20 +197,170 @@ EndFunc   ;==>UI_Create
 ; -----------------------------------------------------------------------------
 Func UI_CreateMenus()
 	Local $idMenuFile = GUICtrlCreateMenu("&Fichier")
-	$g_idUiMenuNew = GUICtrlCreateMenuItem("Nouveau", $idMenuFile)
-	$g_idUiMenuOpen = GUICtrlCreateMenuItem("Ouvrir…", $idMenuFile)
+	$g_idUiMenuNew = GUICtrlCreateMenuItem("Nouveau" & @TAB & "Ctrl+N", $idMenuFile)
+	$g_idUiMenuOpen = GUICtrlCreateMenuItem("Ouvrir…" & @TAB & "Ctrl+O", $idMenuFile)
 	GUICtrlCreateMenuItem("", $idMenuFile) ; séparateur
-	$g_idUiMenuSave = GUICtrlCreateMenuItem("Enregistrer", $idMenuFile)
-	$g_idUiMenuSaveAs = GUICtrlCreateMenuItem("Enregistrer sous…", $idMenuFile)
+	$g_idUiMenuSave = GUICtrlCreateMenuItem("Enregistrer" & @TAB & "Ctrl+S", $idMenuFile)
+	$g_idUiMenuSaveAs = GUICtrlCreateMenuItem("Enregistrer sous…" & @TAB & "Ctrl+Maj+S", $idMenuFile)
 	GUICtrlCreateMenuItem("", $idMenuFile)
 	$g_idUiMenuQuit = GUICtrlCreateMenuItem("Quitter", $idMenuFile)
 
+	Local $idMenuEdit = GUICtrlCreateMenu("&Édition")
+	$g_idUiMenuUndo = GUICtrlCreateMenuItem("Annuler" & @TAB & "Ctrl+Z", $idMenuEdit)
+	$g_idUiMenuRedo = GUICtrlCreateMenuItem("Rétablir" & @TAB & "Ctrl+Y", $idMenuEdit)
+
 	Local $idMenuView = GUICtrlCreateMenu("&Affichage")
 	$g_idUiMenuFit = GUICtrlCreateMenuItem("Recentrer sur la boîte", $idMenuView)
+	$g_idUiMenuLayerSimpleView = GUICtrlCreateMenuItem("Layers : vue simplifiée", $idMenuView)
+
+	Local $idMenuZoneLabel = GUICtrlCreateMenu("Taille des zones", $idMenuView)
+	$g_idUiMenuZoneNever = GUICtrlCreateMenuItem("Jamais", $idMenuZoneLabel)
+	$g_idUiMenuZoneHover = GUICtrlCreateMenuItem("Zone survolée", $idMenuZoneLabel)
+	$g_idUiMenuZoneAlways = GUICtrlCreateMenuItem("Toujours", $idMenuZoneLabel)
 
 	Local $idMenuGen = GUICtrlCreateMenu("&Génération")
-	$g_idUiMenuDxf = GUICtrlCreateMenuItem("Générer le DXF…", $idMenuGen)
+	$g_idUiMenuDxf = GUICtrlCreateMenuItem("Générer le DXF…" & @TAB & "Ctrl+G", $idMenuGen)
+
+	Local $idMenuMainSep = GUICtrlCreateMenu("Séparateur principal", $idMenuGen)
+	$g_idUiMenuMainSepH = GUICtrlCreateMenuItem("Horizontal", $idMenuMainSep)
+	$g_idUiMenuMainSepV = GUICtrlCreateMenuItem("Vertical", $idMenuMainSep)
+
+	; Contrôles fantômes ciblés par les accélérateurs Haut/Bas (cf.
+	; UI_SetUpDownAccelActive) — doivent être créés pendant que $g_hUiMainGui
+	; est la GUI active, comme le reste de ce menu.
+	$g_idUiAccelUp = GUICtrlCreateDummy()
+	$g_idUiAccelDown = GUICtrlCreateDummy()
+
+	UI_RebuildAccelerators()
 EndFunc   ;==>UI_CreateMenus
+
+; -----------------------------------------------------------------------------
+; (Re)construit la table d'accélérateurs de la fenêtre principale : les
+; raccourcis clavier de menu (déclenchent le même id de contrôle qu'un clic
+; menu, actifs même si le focus est dans un champ de saisie), et — SEULEMENT
+; quand $g_bUiUpDownAccelActive — Haut/Bas (cf. UI_SetUpDownAccelActive).
+; -----------------------------------------------------------------------------
+Func UI_RebuildAccelerators()
+	Local $aBase[7][2] = [ _
+			["^n", $g_idUiMenuNew], ["^o", $g_idUiMenuOpen], ["^s", $g_idUiMenuSave], _
+			["^+s", $g_idUiMenuSaveAs], ["^g", $g_idUiMenuDxf], _
+			["^z", $g_idUiMenuUndo], ["^y", $g_idUiMenuRedo]]
+
+	If Not $g_bUiUpDownAccelActive Then
+		GUISetAccelerators($aBase, $g_hUiMainGui)
+		Return
+	EndIf
+
+	Local $aAccel[9][2]
+	For $i = 0 To 6
+		$aAccel[$i][0] = $aBase[$i][0]
+		$aAccel[$i][1] = $aBase[$i][1]
+	Next
+	$aAccel[7][0] = "{UP}"
+	$aAccel[7][1] = $g_idUiAccelUp
+	$aAccel[8][0] = "{DOWN}"
+	$aAccel[8][1] = $g_idUiAccelDown
+	GUISetAccelerators($aAccel, $g_hUiMainGui)
+EndFunc   ;==>UI_RebuildAccelerators
+
+; Active/désactive l'interception Haut/Bas (cf. Input_OnCommand, EN_SETFOCUS/
+; EN_KILLFOCUS des champs suivis). Un accélérateur Windows, contrairement à un
+; polling, consomme la touche avant qu'elle n'atteigne le contrôle Edit natif
+; (qui sinon déplace le curseur silencieusement au passage) — mais il le fait
+; pour TOUTE la fenêtre, d'où la bascule : hors saisie d'un champ suivi (ex.
+; la combo Layer du séparateur), Haut/Bas doivent garder leur usage natif.
+Func UI_SetUpDownAccelActive($bActive)
+	If $g_bUiUpDownAccelActive = $bActive Then Return
+	$g_bUiUpDownAccelActive = $bActive
+	UI_RebuildAccelerators()
+EndFunc   ;==>UI_SetUpDownAccelActive
+
+; -----------------------------------------------------------------------------
+; Applique le style de docking standard des labels/inputs des panneaux : la
+; taille et la distance au bord droit/haut restent fixes quand la fenêtre est
+; redimensionnée (sans ça, AutoIt redimensionne/déplace ces contrôles de façon
+; proportionnelle par défaut — ils dériveraient au fil des redimensionnements).
+; Retourne l'id reçu (permet de chaîner : UI_Dock(GUICtrlCreateLabel(...))).
+; -----------------------------------------------------------------------------
+Func UI_Dock($idCtrl)
+	GUICtrlSetResizing($idCtrl, BitOR($GUI_DOCKSIZE, $GUI_DOCKRIGHT, $GUI_DOCKTOP))
+	Return $idCtrl
+EndFunc   ;==>UI_Dock
+
+; =============================================================================
+; Bulles d'information (popups légers, sans focus) :
+;   - bulle de survol : nom du séparateur/de la boîte survolé sur le canevas ;
+;   - bulle de formule : traduction + résultat, au-dessus du champ Position
+;     pendant la saisie d'une formule.
+; Deux instances distinctes (pas une bulle partagée) : les deux contextes
+; peuvent être actifs en même temps (survol du canevas pendant une saisie).
+; =============================================================================
+Func UI_TooltipsCreate()
+	UI_TooltipCreateInstance($g_hUiHoverTipGui, $g_idUiHoverTipLbl)
+	UI_TooltipCreateInstance($g_hUiFormulaTipGui, $g_idUiFormulaTipLbl)
+EndFunc   ;==>UI_TooltipsCreate
+
+Func UI_TooltipCreateInstance(ByRef $hGui, ByRef $idLbl)
+	$hGui = GUICreate("", $UI_TOOLTIP_PAD_X*3, $UI_TOOLTIP_PAD_Y*3, -1, -1, BitOR($WS_POPUP, $WS_BORDER), $WS_EX_TOPMOST, $g_hUiMainGui)
+	GUISetBkColor($UI_COLOR_PANEL_BG, $hGui)
+	$idLbl = GUICtrlCreateLabel("", $UI_TOOLTIP_PAD_X, $UI_TOOLTIP_PAD_Y, $UI_TOOLTIP_PAD_X, $UI_TOOLTIP_PAD_X)
+	GUICtrlSetColor($idLbl, $UI_COLOR_TEXT)
+	GUICtrlSetBkColor($idLbl, $GUI_BKCOLOR_TRANSPARENT)
+	GUICtrlSetFont($idLbl, 9)
+	GUICtrlSetResizing($idLbl, BitOR($GUI_DOCKLEFT, $GUI_DOCKRIGHT, $GUI_DOCKTOP, $GUI_DOCKBOTTOM))
+EndFunc   ;==>UI_TooltipCreateInstance
+
+; Taille (px) nécessaire pour afficher $sText (lignes séparées par @CRLF).
+; Mesure approximative (largeur moyenne de caractère) : la police n'étant pas
+; à chasse fixe, on préfère une bulle légèrement trop large à un texte tronqué.
+Func UI_TooltipMeasure($sText, ByRef $iW, ByRef $iH)
+	Local $aLines = StringSplit($sText, @CRLF, 3)
+	Local $iMaxLen = 1
+	For $i = 0 To UBound($aLines) - 1
+		If StringLen($aLines[$i]) > $iMaxLen Then $iMaxLen = StringLen($aLines[$i])
+	Next
+	$iW = $UI_TOOLTIP_PAD_X * 2.5 + $iMaxLen * $UI_TOOLTIP_CHAR_W
+	$iH = $UI_TOOLTIP_PAD_Y * 2.5 + UBound($aLines) * $UI_TOOLTIP_LINE_H
+EndFunc   ;==>UI_TooltipMeasure
+
+; Affiche l'instance ($hGui/$idLbl) à la position écran ($iScreenX, $iScreenY)
+; = coin haut-gauche. SHOWNOACTIVATE : la bulle n'enlève jamais le focus
+; (indispensable pendant une saisie).
+Func UI_TooltipShowAt($hGui, $idLbl, $sText, $iScreenX, $iScreenY)
+	If $hGui = 0 Then Return
+	Local $iW, $iH
+	UI_TooltipMeasure($sText, $iW, $iH)
+	GUICtrlSetData($idLbl, $sText)
+	WinMove($hGui, "", $iScreenX, $iScreenY, $iW, $iH)
+	GUISetState(@SW_SHOWNOACTIVATE, $hGui)
+EndFunc   ;==>UI_TooltipShowAt
+
+Func UI_TooltipHideInstance($hGui)
+	If $hGui = 0 Then Return
+	GUISetState(@SW_HIDE, $hGui)
+EndFunc   ;==>UI_TooltipHideInstance
+
+; --- Bulle de survol : positionnée près du curseur (coordonnées ÉCRAN) ---
+Func UI_HoverTipShow($sText, $iScreenX, $iScreenY)
+	UI_TooltipShowAt($g_hUiHoverTipGui, $g_idUiHoverTipLbl, $sText, $iScreenX + 16, $iScreenY + 16)
+EndFunc   ;==>UI_HoverTipShow
+
+Func UI_HoverTipHide()
+	UI_TooltipHideInstance($g_hUiHoverTipGui)
+EndFunc   ;==>UI_HoverTipHide
+
+; --- Bulle de formule : positionnée juste AU-DESSUS du contrôle donné ---
+Func UI_FormulaTipShowAboveControl($idCtrl, $sText)
+	Local $iW, $iH
+	UI_TooltipMeasure($sText, $iW, $iH)
+	Local $tRect = _WinAPI_GetWindowRect(GUICtrlGetHandle($idCtrl))
+	UI_TooltipShowAt($g_hUiFormulaTipGui, $g_idUiFormulaTipLbl, $sText, _
+			DllStructGetData($tRect, "Left"), DllStructGetData($tRect, "Top") - $iH - 4)
+EndFunc   ;==>UI_FormulaTipShowAboveControl
+
+Func UI_FormulaTipHide()
+	UI_TooltipHideInstance($g_hUiFormulaTipGui)
+EndFunc   ;==>UI_FormulaTipHide
 
 ; -----------------------------------------------------------------------------
 ; Génération DXF : demande un chemin puis délègue à l'export (niveau 5).
@@ -181,6 +381,56 @@ Func UI_DoExportDxf()
 				"Impossible d'écrire le fichier :" & @CRLF & $sPath, 0, $g_hUiMainGui)
 	EndIf
 EndFunc   ;==>UI_DoExportDxf
+
+; -----------------------------------------------------------------------------
+; Séparateur principal (Génération > Séparateur principal) : réglage "menu
+; uniquement" (cahier des charges) — décide quelle orientation reçoit
+; l'encoche haute aux croisements de séparateurs (cf. DXF.au3). Coches
+; mutuellement exclusives, gérées à la main (pas de radio-menu natif AutoIt).
+; -----------------------------------------------------------------------------
+Func UI_SetMainSepOrient($iOrient)
+	If Project_BoxGet($BOX_MAIN_SEP_ORIENT) = $iOrient Then Return ; rien ne change : pas d'entrée Annuler
+	Undo_PushSnapshot()
+	If Not Project_BoxSet($BOX_MAIN_SEP_ORIENT, $iOrient) Then Return
+	UI_RefreshMainSepOrientMenu()
+	UI_MarkProjectModified()
+EndFunc   ;==>UI_SetMainSepOrient
+
+; Applique l'orientation SANS marquer le projet modifié : utilisé pour semer
+; un projet FRAÎCHEMENT créé (démarrage, Nouveau) avec le dernier choix de
+; l'utilisateur (cf. Settings_GetMainSepOrient) — ce n'est pas une action de
+; l'utilisateur sur CE projet, donc pas une modification à signaler/enregistrer.
+; Un projet OUVERT, lui, reprend sa propre valeur sauvegardée (ProjectIO.au3).
+Func UI_SeedMainSepOrient($iOrient)
+	If Not Project_BoxSet($BOX_MAIN_SEP_ORIENT, $iOrient) Then Return
+	UI_RefreshMainSepOrientMenu()
+EndFunc   ;==>UI_SeedMainSepOrient
+
+Func UI_RefreshMainSepOrientMenu()
+	Local $iOrient = Project_BoxGet($BOX_MAIN_SEP_ORIENT)
+	GUICtrlSetState($g_idUiMenuMainSepH, ($iOrient = $SEP_ORIENT_H) ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($g_idUiMenuMainSepV, ($iOrient = $SEP_ORIENT_V) ? $GUI_CHECKED : $GUI_UNCHECKED)
+EndFunc   ;==>UI_RefreshMainSepOrientMenu
+
+; -----------------------------------------------------------------------------
+; Mode d'affichage de la taille des zones (Affichage > Taille des zones) :
+; réglage "menu uniquement", persisté avec l'état fenêtre (cf. Settings.au3),
+; PAS avec le projet (c'est une préférence d'affichage, pas une donnée
+; métier). Le popup de survol reste toujours actif quel que soit ce mode.
+; L'état vit dans App.au3 (lu par Renderer.au3) ; cette fonction se contente
+; de synchroniser les coches du menu.
+; -----------------------------------------------------------------------------
+Func UI_SetZoneLabelMode($iMode)
+	If Not App_SetZoneLabelMode($iMode) Then Return
+	GUICtrlSetState($g_idUiMenuZoneNever, ($iMode = $APP_ZONELABEL_NEVER) ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($g_idUiMenuZoneHover, ($iMode = $APP_ZONELABEL_HOVER) ? $GUI_CHECKED : $GUI_UNCHECKED)
+	GUICtrlSetState($g_idUiMenuZoneAlways, ($iMode = $APP_ZONELABEL_ALWAYS) ? $GUI_CHECKED : $GUI_UNCHECKED)
+	App_InvalidateView()
+EndFunc   ;==>UI_SetZoneLabelMode
+
+Func UI_GetZoneLabelMode()
+	Return App_GetZoneLabelMode()
+EndFunc   ;==>UI_GetZoneLabelMode
 
 ; -----------------------------------------------------------------------------
 ; Titre de la fenêtre : application, projet courant, astérisque si modifié.
@@ -218,21 +468,66 @@ EndFunc   ;==>UI_ConsumeQuitRequested
 ; Resynchronise TOUTE l'interface après remplacement du projet (Nouveau/Ouvrir) :
 ; panneaux, liste des layers, sélection, caméra, titre.
 ; -----------------------------------------------------------------------------
-Func UI_AfterProjectReplaced()
-	Selection_Clear()
+; Cadre le rectangle EXTÉRIEUR de la boîte dans le canvas (l'origine monde
+; étant le coin intérieur, l'extérieur commence en (−épaisseur, −épaisseur)).
+Func UI_FitCameraToBox()
+	Local $fOx1, $fOy1, $fOx2, $fOy2
+	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
+	Camera_FitRect($fOx1, $fOy1, $fOx2 - $fOx1, $fOy2 - $fOy1)
+EndFunc   ;==>UI_FitCameraToBox
+
+; Resynchronise les panneaux (Boîte/Layers/Séparateur) avec le modèle
+; courant — partagé par UI_AfterProjectReplaced (Nouveau/Ouvrir) et
+; UI_DoUndo/UI_DoRedo. La sélection n'est désélectionnée QUE si elle
+; référence un id absent du nouvel état (ex. Annuler la création d'un
+; séparateur) — la garder quand l'id existe encore (cas courant d'un
+; Annuler/Rétablir de position/formule) permet à l'utilisateur de VOIR le
+; panneau Séparateur suivre le changement au lieu de se refermer à chaque fois.
+; Ne touche PAS à la sélection : l'appelant en décide (Selection_Clear() pour
+; un nouveau projet — cf. UI_AfterProjectReplaced —, ou déjà restaurée telle
+; quelle par Undo_Undo/Undo_Redo, cf. Undo.au3/_Undo_Restore).
+Func UI_RefreshAllPanels()
 	UI_RefreshBoxInputs()
+	UI_RefreshMainSepOrientMenu()
 	UI_RefreshLayerInputs()
 	For $i = 0 To $LAYERS_COUNT - 1
 		UI_RefreshLayerRow($i)
 	Next
 	UI_RefreshSeparatorSection()
+EndFunc   ;==>UI_RefreshAllPanels
 
-	Camera_FitRect(0, 0, Project_BoxGet($BOX_WIDTH), Project_BoxGet($BOX_LENGTH))
+Func UI_AfterProjectReplaced()
+	Undo_Reset() ; rien à annuler/rétablir avant un projet tout juste chargé
+	Selection_Clear() ; nouveau projet : une ancienne sélection n'a plus de sens ici
+	UI_RefreshAllPanels()
+
+	UI_FitCameraToBox()
 
 	App_SetProjectModified(False)
 	UI_UpdateTitle()
 	App_InvalidateView()
 EndFunc   ;==>UI_AfterProjectReplaced
+
+; -----------------------------------------------------------------------------
+; Annuler / Rétablir (Ctrl+Z / Ctrl+Y, cf. UI_RebuildAccelerators) : le modèle
+; est remplacé par un instantané antérieur/postérieur (cf. Undo.au3) — la
+; caméra n'est PAS recadrée (contrairement à Nouveau/Ouvrir : l'utilisateur
+; regarde la même zone avant et après), mais tout le reste se resynchronise
+; comme un changement de projet.
+; -----------------------------------------------------------------------------
+Func UI_DoUndo()
+	If Not Undo_Undo() Then Return
+	UI_RefreshAllPanels()
+	UI_MarkProjectModified()
+	App_InvalidateView()
+EndFunc   ;==>UI_DoUndo
+
+Func UI_DoRedo()
+	If Not Undo_Redo() Then Return
+	UI_RefreshAllPanels()
+	UI_MarkProjectModified()
+	App_InvalidateView()
+EndFunc   ;==>UI_DoRedo
 
 ; --- Actions du menu Fichier ---------------------------------------------------
 
@@ -240,6 +535,7 @@ Func UI_DoNew()
 	If Not UI_ConfirmDiscard() Then Return
 	Metier_NewProject()
 	ProjectIO_SetPath("")
+	UI_SeedMainSepOrient(Settings_GetMainSepOrient()) ; reprend le dernier choix, pas le défaut d'usine
 	UI_AfterProjectReplaced()
 EndFunc   ;==>UI_DoNew
 
@@ -285,7 +581,7 @@ Func UI_CreatePanelRight()
 	$g_hUiPanelRightGui = GUICreate("", $UI_PANEL_RIGHT_W, 100, 0, 0, $WS_CHILD, 0, $g_hUiMainGui)
 	GUISetBkColor($UI_COLOR_PANEL_BG, $g_hUiPanelRightGui)
 
-	Local $idTitle = GUICtrlCreateLabel("Propriétés", 12, 10, $UI_PANEL_RIGHT_W - 24, 20)
+	Local $idTitle = UI_Dock(GUICtrlCreateLabel("Propriétés", 12, 10, $UI_PANEL_RIGHT_W - 24, 20))
 	GUICtrlSetColor($idTitle, $UI_COLOR_TEXT)
 	GUICtrlSetBkColor($idTitle, $GUI_BKCOLOR_TRANSPARENT)
 	GUICtrlSetFont($idTitle, 10, 700)
@@ -302,7 +598,7 @@ EndFunc   ;==>UI_CreatePanelRight
 ; existe. Tous les contrôles sont recensés pour le masquage en bloc.
 ; -----------------------------------------------------------------------------
 Func UI_CreateSeparatorSection($iYStart)
-	$g_idUiSepTitle = GUICtrlCreateLabel("", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18)
+	$g_idUiSepTitle = UI_Dock(GUICtrlCreateLabel("", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18))
 	GUICtrlSetColor($g_idUiSepTitle, $UI_COLOR_TEXT)
 	GUICtrlSetBkColor($g_idUiSepTitle, $GUI_BKCOLOR_TRANSPARENT)
 	GUICtrlSetFont($g_idUiSepTitle, 9, 700)
@@ -313,11 +609,11 @@ Func UI_CreateSeparatorSection($iYStart)
 	; Position : saisissable — un NOMBRE (clampé par le métier) ou une
 	; FORMULE référençant d'autres séparateurs, ex : "s1.pos + 20" (le
 	; séparateur devient alors piloté et suit ses références).
-	Local $idPosLabel = GUICtrlCreateLabel("Position (mm / formule)", 12, $iY + 3, 136, 18)
+	Local $idPosLabel = UI_Dock(GUICtrlCreateLabel("Position (mm / formule)", 12, $iY + 3, 136, 18))
 	GUICtrlSetColor($idPosLabel, $UI_COLOR_TEXT_DIM)
 	GUICtrlSetBkColor($idPosLabel, $GUI_BKCOLOR_TRANSPARENT)
 	UI_TrackSepCtrl($idPosLabel)
-	$g_idUiSepPosInput = GUICtrlCreateInput("", 156, $iY, 96, 22)
+	$g_idUiSepPosInput = UI_Dock(GUICtrlCreateInput("", 156, $iY, 96, 22))
 	UI_TrackSepCtrl($g_idUiSepPosInput)
 	$iY += 28
 
@@ -326,11 +622,11 @@ Func UI_CreateSeparatorSection($iYStart)
 	$g_idUiSepGroupValue = UI_CreateSepValueRow("Groupe", $iY)
 
 	; Layer du séparateur : liste déroulante des 30 layers.
-	Local $idLabel = GUICtrlCreateLabel("Layer", 12, $iY + 3, 136, 18)
+	Local $idLabel = UI_Dock(GUICtrlCreateLabel("Layer", 12, $iY + 3, 136, 18))
 	GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
 	GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
 	UI_TrackSepCtrl($idLabel)
-	$g_idUiSepLayerCombo = GUICtrlCreateCombo("", 156, $iY, 96, 22, BitOR($CBS_DROPDOWNLIST, $WS_VSCROLL))
+	$g_idUiSepLayerCombo = UI_Dock(GUICtrlCreateCombo("", 156, $iY, 96, 22, BitOR($CBS_DROPDOWNLIST, $WS_VSCROLL)))
 	Local $sItems = ""
 	For $i = 0 To $LAYERS_COUNT - 1
 		$sItems &= ($i > 0 ? "|" : "") & Layers_Name($i)
@@ -339,9 +635,9 @@ Func UI_CreateSeparatorSection($iYStart)
 	UI_TrackSepCtrl($g_idUiSepLayerCombo)
 	$iY += 28
 
-	$g_idUiBtnSepApplyPos = GUICtrlCreateButton("Appliquer", 52, $iY + 4, 96, 26)
+	$g_idUiBtnSepApplyPos =  UI_Dock(GUICtrlCreateButton("Appliquer", 52, $iY + 4, 96, 26))
 	UI_TrackSepCtrl($g_idUiBtnSepApplyPos)
-	$g_idUiBtnSepDelete = GUICtrlCreateButton("Supprimer", 156, $iY + 4, 96, 26)
+	$g_idUiBtnSepDelete =  UI_Dock(GUICtrlCreateButton("Supprimer", 156, $iY + 4, 96, 26))
 	UI_TrackSepCtrl($g_idUiBtnSepDelete)
 
 	UI_RefreshSeparatorSection() ; masque la section (aucune sélection au départ)
@@ -350,12 +646,12 @@ EndFunc   ;==>UI_CreateSeparatorSection
 ; Crée une rangée "libellé + valeur en lecture seule" de la section Séparateur
 ; et avance $iY. Retourne l'id du label de valeur.
 Func UI_CreateSepValueRow($sLabel, ByRef $iY)
-	Local $idLabel = GUICtrlCreateLabel($sLabel, 12, $iY + 3, 136, 18)
+	Local $idLabel = UI_Dock(GUICtrlCreateLabel($sLabel, 12, $iY + 3, 136, 18))
 	GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
 	GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
 	UI_TrackSepCtrl($idLabel)
 
-	Local $idValue = GUICtrlCreateLabel("", 156, $iY + 3, 96, 18)
+	Local $idValue = UI_Dock(GUICtrlCreateLabel("", 156, $iY + 3, 96, 18))
 	GUICtrlSetColor($idValue, $UI_COLOR_TEXT)
 	GUICtrlSetBkColor($idValue, $GUI_BKCOLOR_TRANSPARENT)
 	UI_TrackSepCtrl($idValue)
@@ -407,9 +703,19 @@ Func UI_RefreshSeparatorPosition()
 	Local $sFormula = Project_SepGet($iRow, $SEP_FORMULA)
 	GUICtrlSetData($g_idUiSepPosInput, ($sFormula = "") _
 			 ? UI_FmtMm(Project_SepGet($iRow, $SEP_POS)) : $sFormula)
+	UI_RefreshSeparatorDerived()
+EndFunc   ;==>UI_RefreshSeparatorPosition
+
+; Rafraîchit uniquement les libellés DÉRIVÉS (Pos. effective, Longueur) — PAS
+; le champ Position lui-même. Utilisé pendant la frappe (aperçu en direct,
+; cf. Input.au3) : le champ édité par l'utilisateur ne doit jamais être
+; réécrit sous ses yeux tant qu'il n'a pas validé (Entrée / perte de focus).
+Func UI_RefreshSeparatorDerived()
+	Local $iRow = Selection_HasSelection() ? Project_SepFindById(Selection_GetId()) : -1
+	If $iRow = -1 Then Return
 	GUICtrlSetData($g_idUiSepPosEff, UI_FmtMm(Project_SepGet($iRow, $SEP_POS)))
 	GUICtrlSetData($g_idUiSepLenValue, UI_FmtMm(Project_SepLength($iRow)))
-EndFunc   ;==>UI_RefreshSeparatorPosition
+EndFunc   ;==>UI_RefreshSeparatorDerived
 
 ; Applique la saisie du champ Position au séparateur sélectionné :
 ;   - un NOMBRE : position libre (efface une éventuelle formule) puis
@@ -421,6 +727,11 @@ Func UI_ApplySeparatorPosition()
 	If Not Selection_HasSelection() Then Return
 	Local $iId = Selection_GetId()
 	Local $sInput = StringStripWS(GUICtrlRead($g_idUiSepPosInput), 3)
+
+	; État d'avant-frappe — une seule fois par session (cf. Undo_Arm). Pour
+	; une FORMULE, c'est ICI (et pas dans l'aperçu en direct) que la première
+	; mutation effective a lieu (cf. Input_PreviewSepPos).
+	Undo_CaptureIfArmed()
 
 	If StringRegExp($sInput, "^[-+]?[0-9]+([\.,][0-9]+)?$") Then
 		; Nombre pur : libère le séparateur puis le déplace.
@@ -448,6 +759,8 @@ Func UI_ApplySeparatorLayer()
 	Local $iLayer = Number(StringTrimLeft(GUICtrlRead($g_idUiSepLayerCombo), 6))
 	If $iLayer < 0 Or $iLayer >= $LAYERS_COUNT Then Return
 
+	Undo_PushSnapshot() ; action ponctuelle (combo), pas une session de frappe
+
 	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
 	For $i = 0 To Project_SepCount() - 1
 		If $i = $iRow Or ($iGroup <> $SEP_NO_GROUP And Project_SepGet($i, $SEP_GROUP) = $iGroup) Then
@@ -461,6 +774,7 @@ EndFunc   ;==>UI_ApplySeparatorLayer
 ; Supprime le séparateur sélectionné (le groupe entier suit — règle métier).
 Func UI_DeleteSelectedSeparator()
 	If Not Selection_HasSelection() Then Return
+	Undo_PushSnapshot()
 	Metier_DeleteSeparator(Selection_GetId())
 	Selection_Clear()
 	UI_RefreshSeparatorSection()
@@ -474,7 +788,7 @@ EndFunc   ;==>UI_DeleteSelectedSeparator
 ; structure Boîte (aucun code dupliqué par champ).
 ; -----------------------------------------------------------------------------
 Func UI_CreateBoxSection($iYStart)
-	Local $idSection = GUICtrlCreateLabel("Boîte", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18)
+	Local $idSection = UI_Dock(GUICtrlCreateLabel("Boîte", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18))
 	GUICtrlSetColor($idSection, $UI_COLOR_TEXT)
 	GUICtrlSetBkColor($idSection, $GUI_BKCOLOR_TRANSPARENT)
 	GUICtrlSetFont($idSection, 9, 700)
@@ -490,14 +804,17 @@ Func UI_CreateBoxSection($iYStart)
 
 	Local $iY = $iYStart + 26
 	For $i = 0 To $BOX_FIELD_COUNT - 1
-		Local $idLabel = GUICtrlCreateLabel($aLabels[$i], 12, $iY + 3, 136, 18)
+		; Séparateur principal : réglage "menu uniquement" (cf. cahier des
+		; charges) — pas de champ dans ce panneau.
+		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop
+		Local $idLabel = UI_Dock(GUICtrlCreateLabel($aLabels[$i], 12, $iY + 3, 136, 18))
 		GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
 		GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
-		$g_aidUiBoxInputs[$i] = GUICtrlCreateInput("", 156, $iY, 96, 22)
+		$g_aidUiBoxInputs[$i] = UI_Dock(GUICtrlCreateInput("", 156, $iY, 96, 22))
 		$iY += 28
 	Next
 
-	$g_idUiBtnApplyBox = GUICtrlCreateButton("Appliquer", 156, $iY + 4, 96, 26)
+	$g_idUiBtnApplyBox =  UI_Dock(GUICtrlCreateButton("Appliquer", 156, $iY + 4, 96, 26))
 EndFunc   ;==>UI_CreateBoxSection
 
 ; -----------------------------------------------------------------------------
@@ -506,18 +823,18 @@ EndFunc   ;==>UI_CreateBoxSection
 ; des inputs créés génériquement, indexés comme la structure Layer.
 ; -----------------------------------------------------------------------------
 Func UI_CreateLayerSection($iYStart)
-	$g_idUiLayerSectionTitle = GUICtrlCreateLabel("", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18)
+	$g_idUiLayerSectionTitle = UI_Dock(GUICtrlCreateLabel("", 12, $iYStart, $UI_PANEL_RIGHT_W - 24, 18))
 	GUICtrlSetColor($g_idUiLayerSectionTitle, $UI_COLOR_TEXT)
 	GUICtrlSetBkColor($g_idUiLayerSectionTitle, $GUI_BKCOLOR_TRANSPARENT)
 	GUICtrlSetFont($g_idUiLayerSectionTitle, 9, 700)
 
 	; Rangée couleur : pastille (label coloré) + bouton sélecteur.
 	Local $iY = $iYStart + 26
-	Local $idColorLabel = GUICtrlCreateLabel("Couleur", 12, $iY + 3, 136, 18)
+	Local $idColorLabel = UI_Dock(GUICtrlCreateLabel("Couleur", 12, $iY + 3, 136, 18))
 	GUICtrlSetColor($idColorLabel, $UI_COLOR_TEXT_DIM)
 	GUICtrlSetBkColor($idColorLabel, $GUI_BKCOLOR_TRANSPARENT)
-	$g_idUiLayerColorSwatch = GUICtrlCreateLabel("", 156, $iY + 2, 18, 18)
-	$g_idUiLayerColorBtn = GUICtrlCreateButton("Choisir…", 182, $iY, 70, 22)
+	$g_idUiLayerColorSwatch = UI_Dock(GUICtrlCreateLabel("", 156, $iY + 2, 18, 18))
+	$g_idUiLayerColorBtn =  UI_Dock(GUICtrlCreateButton("Choisir…", 182, $iY, 70, 22))
 	$iY += 28
 
 	; Libellés indexés comme les champs Layer (COLOR traité au-dessus).
@@ -529,14 +846,14 @@ Func UI_CreateLayerSection($iYStart)
 
 	For $i = 0 To $LAYER_FIELD_COUNT - 1
 		If $i = $LAYER_COLOR Then ContinueLoop
-		Local $idLabel = GUICtrlCreateLabel($aLabels[$i], 12, $iY + 3, 136, 18)
+		Local $idLabel = UI_Dock(GUICtrlCreateLabel($aLabels[$i], 12, $iY + 3, 136, 18))
 		GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
 		GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
-		$g_aidUiLayerInputs[$i] = GUICtrlCreateInput("", 156, $iY, 96, 22)
+		$g_aidUiLayerInputs[$i] = UI_Dock(GUICtrlCreateInput("", 156, $iY, 96, 22))
 		$iY += 28
 	Next
 
-	$g_idUiBtnApplyLayer = GUICtrlCreateButton("Appliquer", 156, $iY + 4, 96, 26)
+	$g_idUiBtnApplyLayer =  UI_Dock(GUICtrlCreateButton("Appliquer", 156, $iY + 4, 96, 26))
 EndFunc   ;==>UI_CreateLayerSection
 
 ; Recharge la section Layer depuis le modèle (titre, pastille, dimensions).
@@ -566,6 +883,7 @@ EndFunc   ;==>UI_ApplyLayerInputs
 Func UI_PickLayerColor()
 	Local $iColor = _ChooseColor(2, Project_LayerGet($g_iUiActiveLayer, $LAYER_COLOR), 2, $g_hUiMainGui)
 	If @error Then Return ; annulé par l'utilisateur
+	Undo_PushSnapshot()
 	Project_LayerSet($g_iUiActiveLayer, $LAYER_COLOR, $iColor)
 	UI_RefreshLayerInputs()
 	UI_RefreshLayerRow($g_iUiActiveLayer)
@@ -584,6 +902,7 @@ EndFunc   ;==>UI_FmtMm
 ; Recharge les champs depuis le modèle (source de vérité : le métier).
 Func UI_RefreshBoxInputs()
 	For $i = 0 To $BOX_FIELD_COUNT - 1
+		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop
 		GUICtrlSetData($g_aidUiBoxInputs[$i], UI_FmtMm(Project_BoxGet($i)))
 	Next
 EndFunc   ;==>UI_RefreshBoxInputs
@@ -594,6 +913,7 @@ EndFunc   ;==>UI_RefreshBoxInputs
 ; nouvel intérieur et recalcule les sous-zones.
 Func UI_ApplyBoxInputs()
 	For $i = 0 To $BOX_FIELD_COUNT - 1
+		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop
 		Project_BoxSet($i, Number(GUICtrlRead($g_aidUiBoxInputs[$i])))
 	Next
 	Metier_OnBoxChanged()
@@ -623,12 +943,36 @@ Func UI_HandleGuiEvent($iMsg)
 		Case $g_idUiMenuQuit
 			If UI_ConfirmDiscard() Then $g_bUiQuitRequested = True
 			Return True
+		Case $g_idUiMenuUndo
+			UI_DoUndo()
+			Return True
+		Case $g_idUiMenuRedo
+			UI_DoRedo()
+			Return True
 		Case $g_idUiMenuFit
-			Camera_FitRect(0, 0, Project_BoxGet($BOX_WIDTH), Project_BoxGet($BOX_LENGTH))
+			UI_FitCameraToBox()
 			App_InvalidateView()
+			Return True
+		Case $g_idUiMenuLayerSimpleView
+			UI_ToggleLayerSimpleView()
+			Return True
+		Case $g_idUiMenuZoneNever
+			UI_SetZoneLabelMode($APP_ZONELABEL_NEVER)
+			Return True
+		Case $g_idUiMenuZoneHover
+			UI_SetZoneLabelMode($APP_ZONELABEL_HOVER)
+			Return True
+		Case $g_idUiMenuZoneAlways
+			UI_SetZoneLabelMode($APP_ZONELABEL_ALWAYS)
 			Return True
 		Case $g_idUiMenuDxf
 			UI_DoExportDxf()
+			Return True
+		Case $g_idUiMenuMainSepH
+			UI_SetMainSepOrient($SEP_ORIENT_H)
+			Return True
+		Case $g_idUiMenuMainSepV
+			UI_SetMainSepOrient($SEP_ORIENT_V)
 			Return True
 		Case $g_idUiBtnApplyBox
 			UI_ApplyBoxInputs()
@@ -652,11 +996,18 @@ Func UI_HandleGuiEvent($iMsg)
 			; Clic dans la liste : suit la sélection courante.
 			UI_SetActiveLayer(_GUICtrlListView_GetSelectionMark($g_idUiLayerList))
 			Return True
+		Case $g_idUiAccelUp
+			Input_AdjustFieldAtCursor(True)
+			Return True
+		Case $g_idUiAccelDown
+			Input_AdjustFieldAtCursor(False)
+			Return True
 	EndSwitch
 
-	; Clic directement sur un item de la liste (l'événement porte l'id de l'item).
+	; Clic directement sur un item de la liste, ou sur une pastille de la
+	; grille simplifiée (l'événement porte l'id de l'item/de la pastille).
 	For $i = 0 To $LAYERS_COUNT - 1
-		If $iMsg = $g_aidUiLayerItems[$i] Then
+		If $iMsg = $g_aidUiLayerItems[$i] Or $iMsg = $g_aidUiLayerSwatchFill[$i] Or $iMsg = $g_aidUiLayerSwatchBorder[$i] Then
 			UI_SetActiveLayer($i)
 			Return True
 		EndIf
@@ -665,7 +1016,10 @@ Func UI_HandleGuiEvent($iMsg)
 EndFunc   ;==>UI_HandleGuiEvent
 
 ; -----------------------------------------------------------------------------
-; Panneau du bas : Layers (contenu réel à l'étape "Layers").
+; Panneau du bas : Layers. Deux représentations superposées au même endroit
+; (une seule visible à la fois, cf. UI_SetLayerSimpleView) :
+;   - vue détaillée : ListView + icône de couleur (pas de colonne #RRGGBB) ;
+;   - vue simplifiée : grille de pastilles colorées, cadre orange = layer actif.
 ; -----------------------------------------------------------------------------
 Func UI_CreatePanelBottom()
 	$g_hUiPanelBottomGui = GUICreate("", 100, $UI_PANEL_BOTTOM_H, 0, 0, $WS_CHILD, 0, $g_hUiMainGui)
@@ -675,43 +1029,200 @@ Func UI_CreatePanelBottom()
 	GUICtrlSetColor($idTitle, $UI_COLOR_TEXT)
 	GUICtrlSetBkColor($idTitle, $GUI_BKCOLOR_TRANSPARENT)
 	GUICtrlSetFont($idTitle, 10, 700)
+	GUICtrlSetResizing($idTitle, BitOR($GUI_DOCKSIZE, $GUI_DOCKLEFT, $GUI_DOCKBOTTOM))
+
 
 	; Liste des 30 layers. Sélectionner une ligne = choisir le layer actif.
-	$g_idUiLayerList = GUICtrlCreateListView("Layer|Couleur|Ép. (mm)|Haut. (mm)|Créneau L (mm)|Créneau E (mm)", _
+	; Pas de colonne de couleur textuelle : une icône (imagelist) précède le
+	; nom du layer dans la première colonne.
+	$g_idUiLayerList = GUICtrlCreateListView("Layer|Ép. (mm)|Haut. (mm)|Créneau L (mm)|Créneau E (mm)", _
 			12, 32, 600, $UI_PANEL_BOTTOM_H - 44, BitOR($LVS_REPORT, $LVS_SINGLESEL, $LVS_SHOWSELALWAYS))
 	GUICtrlSetBkColor($g_idUiLayerList, $UI_COLOR_PANEL_BG)      ; fond des items
 	GUICtrlSetColor($g_idUiLayerList, $UI_COLOR_TEXT)
 	_GUICtrlListView_SetBkColor($g_idUiLayerList, $UI_COLOR_PANEL_BG) ; fond du contrôle
-	Local $aWidths[6] = [80, 80, 70, 80, 100, 100]
-	For $i = 0 To 5
+	Local $aWidths[5] = [110, 70, 80, 100, 100]
+	For $i = 0 To 4
 		_GUICtrlListView_SetColumnWidth($g_idUiLayerList, $i, $aWidths[$i])
 	Next
 
+	UI_BuildLayerImageList()
 	For $i = 0 To $LAYERS_COUNT - 1
 		$g_aidUiLayerItems[$i] = GUICtrlCreateListViewItem(UI_LayerRowText($i), $g_idUiLayerList)
+		_GUICtrlListView_SetItemImage($g_idUiLayerList, $i, $i)
 	Next
 	_GUICtrlListView_SetItemSelected($g_idUiLayerList, 0, True)
+
+	UI_CreateLayerSwatches()
 EndFunc   ;==>UI_CreatePanelBottom
 
-; Texte d'une ligne de la liste des layers, depuis le modèle.
+; Texte d'une ligne de la liste des layers, depuis le modèle (la couleur est
+; portée par l'icône, cf. UI_BuildLayerImageList — plus de colonne #RRGGBB).
 Func UI_LayerRowText($iIndex)
-	Return Layers_Name($iIndex) & "|#" & Hex(Project_LayerGet($iIndex, $LAYER_COLOR), 6) & _
+	Return Layers_Name($iIndex) & _
 			"|" & Project_LayerGet($iIndex, $LAYER_THICKNESS) & _
 			"|" & Project_LayerGet($iIndex, $LAYER_HEIGHT) & _
 			"|" & Project_LayerGet($iIndex, $LAYER_FINGER_LEN) & _
 			"|" & Project_LayerGet($iIndex, $LAYER_FINGER_SPACING)
 EndFunc   ;==>UI_LayerRowText
 
-; Resynchronise une ligne de la liste après mutation du layer.
+; -----------------------------------------------------------------------------
+; Imagelist des icônes de couleur (vue détaillée) : un petit bitmap uni par
+; layer, indexé comme les layers (index stable : les 30 lignes ne sont jamais
+; réordonnées/supprimées). Reconstruit une icône à l'index $iIndex quand sa
+; couleur change (cf. UI_RefreshLayerRow) via _GUIImageList_Replace.
+; -----------------------------------------------------------------------------
+Func UI_BuildLayerImageList()
+	$g_hUiLayerImgList = _GUIImageList_Create(14, 14, 5, 0, $LAYERS_COUNT, 0)
+	_GUICtrlListView_SetImageList($g_idUiLayerList, $g_hUiLayerImgList, 1) ; 1 = LVSIL_SMALL
+	For $i = 0 To $LAYERS_COUNT - 1
+		Local $hBmp = _WinAPI_CreateSolidBitmap($g_hUiPanelBottomGui, Project_LayerGet($i, $LAYER_COLOR), 14, 14)
+		_GUIImageList_Add($g_hUiLayerImgList, $hBmp)
+		_WinAPI_DeleteObject($hBmp)
+	Next
+EndFunc   ;==>UI_BuildLayerImageList
+
+Func UI_RefreshLayerIcon($iIndex)
+	If $g_hUiLayerImgList = 0 Then Return
+	Local $hBmp = _WinAPI_CreateSolidBitmap($g_hUiPanelBottomGui, Project_LayerGet($iIndex, $LAYER_COLOR), 14, 14)
+	_GUIImageList_Replace($g_hUiLayerImgList, $iIndex, $hBmp)
+	_WinAPI_DeleteObject($hBmp)
+EndFunc   ;==>UI_RefreshLayerIcon
+
+; -----------------------------------------------------------------------------
+; Grille de pastilles (vue simplifiée) : chaque layer est représenté par une
+; pastille cliquable (couleur = couleur du layer, numéro centré) entourée d'un
+; cadre — orange pour le layer actif, sinon invisible (couleur de fond du
+; panneau). Créée masquée : UI_SetLayerSimpleView bascule l'affichage.
+;
+; La grille est DYNAMIQUE : le nombre de colonnes dépend de la largeur
+; disponible (UI_SwatchColumns), recalculé et repositionné à chaque
+; UI_ApplyLayout (UI_RepositionLayerSwatches) — pas de disposition figée en
+; dur, pour rester correct au-delà de 30 layers et sur toute largeur fenêtre.
+; -----------------------------------------------------------------------------
+Global Const $UI_SWATCH_CELL   = 32
+Global Const $UI_SWATCH_SIZE   = 26
+Global Const $UI_SWATCH_FILL   = 20
+Global Const $UI_COLOR_LAYER_ACTIVE = 0xFFA030 ; identique au contour de sélection des séparateurs
+
+; Colonnes tenant dans une largeur disponible $iAvailW (px), au moins 1.
+Func UI_SwatchColumns($iAvailW)
+	Local $iCols = Int($iAvailW / $UI_SWATCH_CELL)
+	Return ($iCols < 1) ? 1 : $iCols
+EndFunc   ;==>UI_SwatchColumns
+
+; Hauteur nécessaire (px) pour la grille complète à $iAvailW de large.
+Func UI_ComputeSimpleViewHeight($iAvailW)
+	Local $iCols = UI_SwatchColumns($iAvailW)
+	Local $iRows = Ceiling($LAYERS_COUNT / $iCols)
+	Return 32 + $iRows * $UI_SWATCH_CELL + 10
+EndFunc   ;==>UI_ComputeSimpleViewHeight
+
+; Couleur de texte (noir/blanc) contrastée avec un fond 0xRRGGBB (luminance
+; perçue standard, seuil 128).
+Func _UI_ContrastTextColor($iRgb)
+	Local $iR = BitShift(BitAND($iRgb, 0xFF0000), 16)
+	Local $iG = BitShift(BitAND($iRgb, 0x00FF00), 8)
+	Local $iB = BitAND($iRgb, 0x0000FF)
+	Local $fLum = ($iR * 299 + $iG * 587 + $iB * 114) / 1000
+	Return ($fLum >= 128) ? 0x000000 : 0xFFFFFF
+EndFunc   ;==>_UI_ContrastTextColor
+
+Func UI_CreateLayerSwatches()
+	For $i = 0 To $LAYERS_COUNT - 1
+		; Position provisoire (0,0) : la position réelle est posée par le
+		; premier UI_ApplyLayout → UI_RepositionLayerSwatches. $SS_NOTIFY sur
+		; les DEUX contrôles : sans ce style, un Label n'émet AUCUN événement
+		; clic dans GUIGetMsg (comportement par défaut d'un STATIC Win32) ;
+		; les deux sont cliquables — quel que soit celui que Windows retient
+		; au hit-test (le cadre entoure toute la pastille, aucune zone
+		; "morte" pour l'utilisateur), UI_HandleGuiEvent teste les deux ids.
+		$g_aidUiLayerSwatchBorder[$i] = GUICtrlCreateLabel("", 0, 0, $UI_SWATCH_SIZE, $UI_SWATCH_SIZE, $SS_NOTIFY)
+		GUICtrlSetBkColor($g_aidUiLayerSwatchBorder[$i], $UI_COLOR_PANEL_BG)
+		GUICtrlSetState($g_aidUiLayerSwatchBorder[$i], $GUI_HIDE)
+		GUICtrlSetResizing($g_aidUiLayerSwatchBorder[$i], BitOR($GUI_DOCKSIZE, $GUI_DOCKLEFT, $GUI_DOCKTOP))
+
+		; Numéro du layer centré H+V (SS_CENTER + SS_CENTERIMAGE : le second
+		; centre aussi le texte verticalement sur un label Win32 mono-ligne).
+		$g_aidUiLayerSwatchFill[$i] = GUICtrlCreateLabel(StringFormat("%02d", $i), 0, 0, _
+				$UI_SWATCH_FILL, $UI_SWATCH_FILL, BitOR($SS_NOTIFY, $SS_CENTER, $SS_CENTERIMAGE))
+		GUICtrlSetFont($g_aidUiLayerSwatchFill[$i], 8, 700)
+		GUICtrlSetBkColor($g_aidUiLayerSwatchFill[$i], Project_LayerGet($i, $LAYER_COLOR))
+		GUICtrlSetColor($g_aidUiLayerSwatchFill[$i], _UI_ContrastTextColor(Project_LayerGet($i, $LAYER_COLOR)))
+		GUICtrlSetState($g_aidUiLayerSwatchFill[$i], $GUI_HIDE)
+		GUICtrlSetResizing($g_aidUiLayerSwatchFill[$i], BitOR($GUI_DOCKSIZE, $GUI_DOCKLEFT, $GUI_DOCKTOP))
+	Next
+EndFunc   ;==>UI_CreateLayerSwatches
+
+; Repositionne toute la grille selon $iCols colonnes (appelé par
+; UI_ApplyLayout quand la vue simplifiée est active).
+Func UI_RepositionLayerSwatches($iCols)
+	If $iCols < 1 Then $iCols = 1
+	Local $iMargin = ($UI_SWATCH_SIZE - $UI_SWATCH_FILL) / 2
+	For $i = 0 To $LAYERS_COUNT - 1
+		Local $iX = 12 + Mod($i, $iCols) * $UI_SWATCH_CELL
+		Local $iY = 32 + Int($i / $iCols) * $UI_SWATCH_CELL
+		GUICtrlSetPos($g_aidUiLayerSwatchBorder[$i], $iX, $iY, $UI_SWATCH_SIZE, $UI_SWATCH_SIZE)
+		GUICtrlSetPos($g_aidUiLayerSwatchFill[$i], $iX + $iMargin, $iY + $iMargin, $UI_SWATCH_FILL, $UI_SWATCH_FILL)
+	Next
+EndFunc   ;==>UI_RepositionLayerSwatches
+
+Func UI_RefreshLayerSwatchColor($iIndex)
+	GUICtrlSetBkColor($g_aidUiLayerSwatchFill[$iIndex], Project_LayerGet($iIndex, $LAYER_COLOR))
+	GUICtrlSetColor($g_aidUiLayerSwatchFill[$iIndex], _UI_ContrastTextColor(Project_LayerGet($iIndex, $LAYER_COLOR)))
+EndFunc   ;==>UI_RefreshLayerSwatchColor
+
+; Remet à jour le cadre de TOUTES les pastilles (coût négligeable : 30
+; contrôles) — plus simple que de traquer laquelle était active avant.
+Func UI_RefreshLayerSwatchActive()
+	For $i = 0 To $LAYERS_COUNT - 1
+		GUICtrlSetBkColor($g_aidUiLayerSwatchBorder[$i], ($i = $g_iUiActiveLayer) ? $UI_COLOR_LAYER_ACTIVE : $UI_COLOR_PANEL_BG)
+	Next
+EndFunc   ;==>UI_RefreshLayerSwatchActive
+
+; Bascule entre vue détaillée (ListView) et vue simplifiée (pastilles) —
+; câblé sur le menu Affichage.
+Func UI_SetLayerSimpleView($bSimple)
+	$g_bUiLayerSimpleView = $bSimple
+	GUICtrlSetState($g_idUiMenuLayerSimpleView, $bSimple ? $GUI_CHECKED : $GUI_UNCHECKED)
+
+	GUICtrlSetState($g_idUiLayerList, $bSimple ? $GUI_HIDE : $GUI_SHOW)
+	Local $iSwatchState = $bSimple ? $GUI_SHOW : $GUI_HIDE
+	For $i = 0 To $LAYERS_COUNT - 1
+		GUICtrlSetState($g_aidUiLayerSwatchBorder[$i], $iSwatchState)
+		GUICtrlSetState($g_aidUiLayerSwatchFill[$i], $iSwatchState)
+	Next
+	If $bSimple Then UI_RefreshLayerSwatchActive()
+
+	; La hauteur du panneau du bas dépend du mode (fixe en vue détaillée,
+	; dynamique en vue simplifiée, cf. UI_ApplyLayout) : demande une nouvelle
+	; passe de disposition au prochain tour de boucle (même chemin que
+	; WM_SIZE — UI.au3 n'appelle jamais Renderer_* directement).
+	$g_bUiLayoutPending = True
+EndFunc   ;==>UI_SetLayerSimpleView
+
+Func UI_ToggleLayerSimpleView()
+	UI_SetLayerSimpleView(Not $g_bUiLayerSimpleView)
+EndFunc   ;==>UI_ToggleLayerSimpleView
+
+Func UI_IsLayerSimpleView()
+	Return $g_bUiLayerSimpleView
+EndFunc   ;==>UI_IsLayerSimpleView
+
+; Resynchronise une ligne de la liste (+ son icône et sa pastille) après
+; mutation du layer (dimensions ou couleur).
 Func UI_RefreshLayerRow($iIndex)
 	GUICtrlSetData($g_aidUiLayerItems[$iIndex], UI_LayerRowText($iIndex))
+	UI_RefreshLayerIcon($iIndex)
+	UI_RefreshLayerSwatchColor($iIndex)
 EndFunc   ;==>UI_RefreshLayerRow
 
-; Change le layer actif et resynchronise la section Layer du panneau droit.
+; Change le layer actif et resynchronise la section Layer du panneau droit
+; ainsi que la surbrillance de la grille de pastilles.
 Func UI_SetActiveLayer($iIndex)
 	If $iIndex < 0 Or $iIndex >= $LAYERS_COUNT Then Return
 	$g_iUiActiveLayer = $iIndex
 	UI_RefreshLayerInputs()
+	UI_RefreshLayerSwatchActive()
 EndFunc   ;==>UI_SetActiveLayer
 
 Func UI_GetActiveLayer()
@@ -729,22 +1240,35 @@ Func UI_ApplyLayout()
 	If $aClient[0] < 1 Or $aClient[1] < 1 Then Return
 
 	Local $iCanvasW = $aClient[0] - $UI_PANEL_RIGHT_W
-	Local $iCanvasH = $aClient[1] - $UI_PANEL_BOTTOM_H
 	If $iCanvasW < 1 Then $iCanvasW = 1
+
+	; Hauteur du panneau du bas : fixe en vue détaillée, dynamique (dépend du
+	; nombre de lignes de pastilles à ce nombre de colonnes) en vue simplifiée
+	; — le canevas récupère automatiquement l'espace restant.
+	Local $iPanelBottomH = $g_bUiLayerSimpleView _
+			? UI_ComputeSimpleViewHeight($iCanvasW - 24) : $UI_PANEL_BOTTOM_H
+
+	Local $iCanvasH = $aClient[1] - $iPanelBottomH
 	If $iCanvasH < 1 Then $iCanvasH = 1
 
 	_WinAPI_MoveWindow($g_hUiCanvasGui, 0, 0, $iCanvasW, $iCanvasH)
 	_WinAPI_MoveWindow($g_hUiPanelRightGui, $iCanvasW, 0, $UI_PANEL_RIGHT_W, $aClient[1])
-	_WinAPI_MoveWindow($g_hUiPanelBottomGui, 0, $iCanvasH, $iCanvasW, $UI_PANEL_BOTTOM_H)
+	_WinAPI_MoveWindow($g_hUiPanelBottomGui, 0, $iCanvasH, $iCanvasW, $iPanelBottomH)
 
-	; La liste des layers suit la largeur du panneau du bas.
+	; La liste des layers suit la largeur du panneau du bas ; la grille de
+	; pastilles suit sa largeur (nombre de colonnes recalculé).
 	If $g_idUiLayerList <> 0 Then GUICtrlSetPos($g_idUiLayerList, 12, 32, $iCanvasW - 24, $UI_PANEL_BOTTOM_H - 44)
+	If $g_bUiLayerSimpleView Then UI_RepositionLayerSwatches(UI_SwatchColumns($iCanvasW - 24))
 
 	$g_iUiCanvasW = $iCanvasW
 	$g_iUiCanvasH = $iCanvasH
 EndFunc   ;==>UI_ApplyLayout
 
 ; --- Accesseurs -------------------------------------------------------------
+Func UI_GetMainHwnd()
+	Return $g_hUiMainGui
+EndFunc   ;==>UI_GetMainHwnd
+
 Func UI_GetCanvasHwnd()
 	Return $g_hUiCanvasGui
 EndFunc   ;==>UI_GetCanvasHwnd

@@ -22,8 +22,10 @@
 ;     continue (décision métier) : c'est elle qui « croise » les autres ;
 ;   - encoches mi-bois aux croisements : encoche HAUTE sur l'horizontal
 ;     (profondeur : h≤v → h/2, sinon h−v/2), encoche BASSE sur le vertical
-;     (profondeur : min(h,v)/2) ; à un contact en T, seule la pièce TRAVERSÉE
-;     reçoit son encoche ;
+;     (profondeur : min(h,v)/2) ; à un contact en T, la pièce TRAVERSÉE reçoit
+;     son encoche normalement, ET la pièce qui s'arrête dessus est prolongée
+;     jusqu'au bout de l'épaisseur de la pièce traversée puis reçoit elle
+;     aussi son encoche (mêmes règles haut/bas et mêmes calculs) ;
 ;   - créneaux inférieurs : tenons traversants (hauteur = épaisseur du fond),
 ;     période = longueur + espacement du layer, motif centré ;
 ;   - extrémité contre une paroi : la pièce se prolonge de l'épaisseur de la
@@ -60,7 +62,7 @@ Global Enum $DXFN_RUN, _       ; index du run porteur de l'encoche
 		$DXFN_TOP, _           ; True = encoche haute, False = encoche basse
 		$DXFN_FIELD_COUNT
 
-; --- Tenons inférieurs des séparateurs (coordonnée monde le long de la portée) ---
+; --- Tenons inférieurs des séparateurs (coordonnée fond le long de la portée) ---
 Global Enum $DXFT_RUN, $DXFT_S0, $DXFT_S1, $DXFT_FIELD_COUNT
 
 ; --- État de travail de l'export (reconstruit à chaque appel) ---
@@ -174,12 +176,18 @@ EndFunc   ;==>_DXF_CornerFingerIntervals
 ; Fusionne les segments alignés d'un même groupe en runs (pièces continues).
 ; Un séparateur isolé est un run à lui seul. Les drapeaux WALL1/WALL2 indiquent
 ; si l'extrémité touche une paroi de la boîte (→ encoche de fixation).
+; Les runs sont stockés dans le repère du FOND (origine au coin extérieur
+; bas-gauche de la boîte, plaque 0..W × 0..L) : l'origine monde étant le coin
+; INTÉRIEUR (0,0 garanti à l'export), la conversion est un décalage d'une
+; épaisseur de paroi sur chaque axe.
 ; -----------------------------------------------------------------------------
 Func _DXF_BuildRuns()
 	ReDim $g_aDxfRuns[0][$DXFRUN_FIELD_COUNT]
 
 	Local $fIx1, $fIy1, $fIx2, $fIy2
-	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2) ; origine toujours (0,0) à l'export
+	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
+	Local $fOx1, $fOy1, $fOx2, $fOy2
+	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
 
 	Local $iCount = Project_SepCount()
 	Local $iFlagSize = ($iCount > 0) ? $iCount : 1 ; un subscript ne peut pas être une expression ternaire
@@ -190,9 +198,16 @@ Func _DXF_BuildRuns()
 		$aDone[$i] = True
 		If Project_SepLength($i) <= $DXF_EPS Then ContinueLoop ; segment dégénéré
 
+		; Décalages monde → repère fond : la portée court le long de l'axe
+		; perpendiculaire à la position (V : portée en Y, position en X).
+		Local $iOrient = Project_SepGet($i, $SEP_ORIENT)
+		Local $fShSpan = ($iOrient = $SEP_ORIENT_V) ? -$fOy1 : -$fOx1
+		Local $fShPos = ($iOrient = $SEP_ORIENT_V) ? -$fOx1 : -$fOy1
+		Local $fPos = Project_SepGet($i, $SEP_POS) + $fShPos
+
 		; Collecte des portées : le segment, plus ceux de son groupe (un groupe
 		; partage orientation et position par construction).
-		Local $aSpans[1][2] = [[Project_SepGet($i, $SEP_SPAN1), Project_SepGet($i, $SEP_SPAN2)]]
+		Local $aSpans[1][2] = [[Project_SepGet($i, $SEP_SPAN1) + $fShSpan, Project_SepGet($i, $SEP_SPAN2) + $fShSpan]]
 		Local $iGroup = Project_SepGet($i, $SEP_GROUP)
 		If $iGroup <> $SEP_NO_GROUP Then
 			For $j = $i + 1 To $iCount - 1
@@ -201,30 +216,29 @@ Func _DXF_BuildRuns()
 				If Project_SepLength($j) <= $DXF_EPS Then ContinueLoop
 				Local $iK = UBound($aSpans)
 				ReDim $aSpans[$iK + 1][2]
-				$aSpans[$iK][0] = Project_SepGet($j, $SEP_SPAN1)
-				$aSpans[$iK][1] = Project_SepGet($j, $SEP_SPAN2)
+				$aSpans[$iK][0] = Project_SepGet($j, $SEP_SPAN1) + $fShSpan
+				$aSpans[$iK][1] = Project_SepGet($j, $SEP_SPAN2) + $fShSpan
 			Next
 		EndIf
 		_DXF_SortIntervals($aSpans)
 
 		; Fusion des portées contiguës (elles se touchent exactement au droit
 		; d'un séparateur perpendiculaire) → runs.
-		Local $iOrient = Project_SepGet($i, $SEP_ORIENT)
-		Local $fWallLo = ($iOrient = $SEP_ORIENT_V) ? $fIy1 : $fIx1
-		Local $fWallHi = ($iOrient = $SEP_ORIENT_V) ? $fIy2 : $fIx2
+		Local $fWallLo = (($iOrient = $SEP_ORIENT_V) ? $fIy1 : $fIx1) + $fShSpan
+		Local $fWallHi = (($iOrient = $SEP_ORIENT_V) ? $fIy2 : $fIx2) + $fShSpan
 
 		Local $fS = $aSpans[0][0], $fE = $aSpans[0][1]
 		For $iK = 1 To UBound($aSpans) - 1
 			If $aSpans[$iK][0] <= $fE + $DXF_EPS Then
 				If $aSpans[$iK][1] > $fE Then $fE = $aSpans[$iK][1]
 			Else
-				_DXF_AddRun($iOrient, Project_SepGet($i, $SEP_POS), Project_SepGet($i, $SEP_LAYER), _
+				_DXF_AddRun($iOrient, $fPos, Project_SepGet($i, $SEP_LAYER), _
 						$fS, $fE, $fWallLo, $fWallHi)
 				$fS = $aSpans[$iK][0]
 				$fE = $aSpans[$iK][1]
 			EndIf
 		Next
-		_DXF_AddRun($iOrient, Project_SepGet($i, $SEP_POS), Project_SepGet($i, $SEP_LAYER), _
+		_DXF_AddRun($iOrient, $fPos, Project_SepGet($i, $SEP_LAYER), _
 				$fS, $fE, $fWallLo, $fWallHi)
 	Next
 EndFunc   ;==>_DXF_BuildRuns
@@ -245,11 +259,21 @@ EndFunc   ;==>_DXF_AddRun
 ; Encoches d'intersection entre runs (décision métier) :
 ;   - croisement complet (les deux runs continuent de part et d'autre) :
 ;     mi-bois → encoche haute sur l'horizontal ET basse sur le vertical ;
-;   - contact en T : seule la pièce TRAVERSÉE reçoit son encoche ;
-;   - contact en L (deux extrémités) : aucune encoche.
+;   - contact en T (une seule pièce continue de part et d'autre) : la pièce
+;     TRAVERSÉE reçoit son encoche normalement ; la pièce qui s'arrête dessus
+;     est prolongée jusqu'au bout de l'épaisseur de la pièce traversée (son
+;     extrémité rejoint la face opposée) et reçoit à son tour une encoche —
+;     mêmes règles (haute/basse selon orientation) et mêmes calculs que pour
+;     un croisement complet ;
+;   - contact en L (deux extrémités) : aucune encoche, aucun prolongement.
 ; -----------------------------------------------------------------------------
 Func _DXF_BuildNotches()
 	ReDim $g_aDxfNotches[0][$DXFN_FIELD_COUNT]
+
+	; Prolongements des pièces qui s'arrêtent en T, appliqués APRÈS la
+	; détection complète : les bornes d'origine des runs doivent rester
+	; stables pendant les tests de contact de toutes les paires ci-dessous.
+	Local $aStopExt[0][3] ; [run, extrémité START ?, delta]
 
 	For $iV = 0 To UBound($g_aDxfRuns) - 1
 		If $g_aDxfRuns[$iV][$DXFRUN_ORIENT] <> $SEP_ORIENT_V Then ContinueLoop
@@ -273,18 +297,54 @@ Func _DXF_BuildNotches()
 
 			Local $fHh = Project_LayerGet($g_aDxfRuns[$iH][$DXFRUN_LAYER], $LAYER_HEIGHT)
 			Local $fVh = Project_LayerGet($g_aDxfRuns[$iV][$DXFRUN_LAYER], $LAYER_HEIGHT)
+			Local $fHThick = Project_LayerGet($g_aDxfRuns[$iH][$DXFRUN_LAYER], $LAYER_THICKNESS)
+			Local $fVThick = Project_LayerGet($g_aDxfRuns[$iV][$DXFRUN_LAYER], $LAYER_THICKNESS)
 
-			; L'horizontal est traversé → encoche HAUTE sur l'horizontal.
-			If $bHCrosses Then _DXF_AddNotch($iH, $fVx, _
-					Project_LayerGet($g_aDxfRuns[$iV][$DXFRUN_LAYER], $LAYER_THICKNESS), _
-					_DXF_TopNotchDepth($fHh, $fVh), True)
-			; Le vertical est traversé → encoche BASSE sur le vertical.
-			If $bVCrosses Then _DXF_AddNotch($iV, $fHy, _
-					Project_LayerGet($g_aDxfRuns[$iH][$DXFRUN_LAYER], $LAYER_THICKNESS), _
-					_DXF_Min($fHh, $fVh) / 2, False)
+			If $bHCrosses Or $bVCrosses Then
+				; Croisement complet OU contact en T : les deux pièces reçoivent
+				; leur encoche (mêmes règles/calculs dans tous les cas). Celle
+				; qui ne continue pas de son côté (T) est en plus prolongée
+				; jusqu'au bout de l'épaisseur de la pièce traversée.
+				; Le paramètre "séparateur principal" de la boîte décide quelle
+				; orientation reçoit l'encoche HAUTE (l'autre reçoit la basse).
+				If Project_BoxGet($BOX_MAIN_SEP_ORIENT) = $SEP_ORIENT_H Then
+					_DXF_AddNotch($iH, $fVx, $fVThick, _DXF_TopNotchDepth($fHh, $fVh), True)
+					_DXF_AddNotch($iV, $fHy, $fHThick, _DXF_Min($fHh, $fVh) / 2, False)
+				Else
+					_DXF_AddNotch($iV, $fHy, $fHThick, _DXF_TopNotchDepth($fVh, $fHh), True)
+					_DXF_AddNotch($iH, $fVx, $fVThick, _DXF_Min($fHh, $fVh) / 2, False)
+				EndIf
+				If Not $bVCrosses Then _DXF_QueueStopExtension($aStopExt, $iV, $fHy, $fHThick / 2)
+				If Not $bHCrosses Then _DXF_QueueStopExtension($aStopExt, $iH, $fVx, $fVThick / 2)
+			EndIf
+			; Ni l'un ni l'autre : contact en L (coin), aucune encoche.
 		Next
 	Next
+
+	For $i = 0 To UBound($aStopExt) - 1
+		Local $iRun = $aStopExt[$i][0]
+		If $aStopExt[$i][1] Then
+			$g_aDxfRuns[$iRun][$DXFRUN_START] -= $aStopExt[$i][2]
+		Else
+			$g_aDxfRuns[$iRun][$DXFRUN_END] += $aStopExt[$i][2]
+		EndIf
+	Next
 EndFunc   ;==>_DXF_BuildNotches
+
+; Enregistre le prolongement d'un run qui s'arrête en T sur un autre : son
+; extrémité de contact (START ou END, selon celle qui correspond) est reculée
+; de $fDelta pour rejoindre le bout de l'épaisseur de la pièce traversée.
+Func _DXF_QueueStopExtension(ByRef $aStopExt, $iRun, $fContact, $fDelta)
+	Local $bIsStart = (Abs($fContact - $g_aDxfRuns[$iRun][$DXFRUN_START]) <= $DXF_EPS)
+	Local $bIsEnd = (Abs($fContact - $g_aDxfRuns[$iRun][$DXFRUN_END]) <= $DXF_EPS)
+	If Not $bIsStart And Not $bIsEnd Then Return ; ne devrait pas arriver
+
+	Local $iN = UBound($aStopExt)
+	ReDim $aStopExt[$iN + 1][3]
+	$aStopExt[$iN][0] = $iRun
+	$aStopExt[$iN][1] = $bIsStart
+	$aStopExt[$iN][2] = $fDelta
+EndFunc   ;==>_DXF_QueueStopExtension
 
 Func _DXF_AddNotch($iRun, $fCenter, $fWidth, $fDepth, $bTop)
 	Local $iN = UBound($g_aDxfNotches)
@@ -453,30 +513,34 @@ EndFunc   ;==>_DXF_EmitPiece
 ; -----------------------------------------------------------------------------
 ; Bord inférieur générique (parcouru de gauche à droite, y=0) : émet les
 ; excursions [s0|s1|dy] (dy<0 = tenon vers le bas, dy>0 = encoche vers le
-; haut), toutes STRICTEMENT à l'intérieur du segment parcouru.
+; haut). Le retour au niveau 0 est omis à une extrémité (0 ou $fLp) qu'une
+; excursion touche exactement : la pièce elle-même s'arrête déjà au niveau de
+; l'excursion à cet endroit (prolongement d'une jonction en T) — c'est le
+; coin construit par l'appelant qui en tient compte, pas ce niveau plein.
 ; -----------------------------------------------------------------------------
-Func _DXF_EmitBottomFeatures(ByRef $aPts, ByRef $aFeat)
+Func _DXF_EmitBottomFeatures(ByRef $aPts, ByRef $aFeat, $fLp)
 	For $i = 0 To UBound($aFeat) - 1
-		_DXF_PtAdd($aPts, $aFeat[$i][0], 0)
+		If $aFeat[$i][0] > $DXF_EPS Then _DXF_PtAdd($aPts, $aFeat[$i][0], 0)
 		_DXF_PtAdd($aPts, $aFeat[$i][0], $aFeat[$i][2])
 		_DXF_PtAdd($aPts, $aFeat[$i][1], $aFeat[$i][2])
-		_DXF_PtAdd($aPts, $aFeat[$i][1], 0)
+		If $aFeat[$i][1] < $fLp - $DXF_EPS Then _DXF_PtAdd($aPts, $aFeat[$i][1], 0)
 	Next
 EndFunc   ;==>_DXF_EmitBottomFeatures
 
 ; Bord supérieur (parcouru de droite à gauche, y=$fH) : encoches [s0|s1|prof].
-Func _DXF_EmitTopFeatures(ByRef $aPts, ByRef $aFeat, $fH)
+; Même omission qu'au-dessus, symétrique, aux extrémités $fLp et 0.
+Func _DXF_EmitTopFeatures(ByRef $aPts, ByRef $aFeat, $fH, $fLp)
 	For $i = UBound($aFeat) - 1 To 0 Step -1
-		_DXF_PtAdd($aPts, $aFeat[$i][1], $fH)
+		If $aFeat[$i][1] < $fLp - $DXF_EPS Then _DXF_PtAdd($aPts, $aFeat[$i][1], $fH)
 		_DXF_PtAdd($aPts, $aFeat[$i][1], $fH - $aFeat[$i][2])
 		_DXF_PtAdd($aPts, $aFeat[$i][0], $fH - $aFeat[$i][2])
-		_DXF_PtAdd($aPts, $aFeat[$i][0], $fH)
+		If $aFeat[$i][0] > $DXF_EPS Then _DXF_PtAdd($aPts, $aFeat[$i][0], $fH)
 	Next
 EndFunc   ;==>_DXF_EmitTopFeatures
 
 ; -----------------------------------------------------------------------------
 ; Pièce d'un run de séparateur, en coordonnées locales :
-;   x = (coordonnée monde le long de la portée) − start + (paroi ? épaisseur : 0)
+;   x = (coordonnée fond le long de la portée) − start + (paroi ? épaisseur : 0)
 ;   y = 0 (bas) .. hauteur du layer.
 ; Extrémité contre une paroi : prolongement d'une épaisseur de paroi avec
 ; encoche de fixation en bas (profondeur hauteur/2) → languette haute.
@@ -520,30 +584,47 @@ Func _DXF_BuildSepPiece($iRun, ByRef $aPts)
 		$aTopLoc[$i][2] = $aTop[$i][2]
 	Next
 
+	; Profondeur d'une encoche (basse/haute) qui touche EXACTEMENT une des
+	; deux extrémités locales (0 ou $fLp) : la pièce, prolongée jusqu'au bout
+	; d'une jonction en T, s'y arrête déjà au niveau de l'encoche — le coin
+	; correspondant ne doit donc pas revenir au niveau plein (0 ou $fH).
+	Local $fBotD0 = 0, $fBotDL = 0, $fTopD0 = 0, $fTopDL = 0
+	For $i = 0 To UBound($aBot) - 1
+		Local $fS0 = $aBot[$i][0] + $fXOff, $fS1 = $aBot[$i][1] + $fXOff
+		If Abs($fS0) <= $DXF_EPS Then $fBotD0 = $aBot[$i][2]
+		If Abs($fS1 - $fLp) <= $DXF_EPS Then $fBotDL = $aBot[$i][2]
+	Next
+	For $i = 0 To UBound($aTopLoc) - 1
+		If Abs($aTopLoc[$i][0]) <= $DXF_EPS Then $fTopD0 = $aTopLoc[$i][2]
+		If Abs($aTopLoc[$i][1] - $fLp) <= $DXF_EPS Then $fTopDL = $aTopLoc[$i][2]
+	Next
+
 	; --- Contour (sens horaire écran / anti-horaire mathématique) ---
 	_DXF_PtInit($aPts)
-	; Coin bas-gauche, avec encoche de fixation si paroi.
+	; Coin bas-gauche : encoche de fixation si paroi, sinon niveau plein SAUF
+	; si une encoche basse s'arrête déjà là (jonction en T prolongée).
 	If $bW1 Then
 		_DXF_PtAdd($aPts, 0, $fH / 2)
 		_DXF_PtAdd($aPts, $fT, $fH / 2)
 		_DXF_PtAdd($aPts, $fT, 0)
 	Else
-		_DXF_PtAdd($aPts, 0, 0)
+		_DXF_PtAdd($aPts, 0, $fBotD0)
 	EndIf
 	; Bord inférieur (tenons + encoches basses).
-	_DXF_EmitBottomFeatures($aPts, $aFeat)
-	; Coin bas-droit, avec encoche de fixation si paroi.
+	_DXF_EmitBottomFeatures($aPts, $aFeat, $fLp)
+	; Coin bas-droit : idem, côté fin de pièce.
 	If $bW2 Then
 		_DXF_PtAdd($aPts, $fLp - $fT, 0)
 		_DXF_PtAdd($aPts, $fLp - $fT, $fH / 2)
 		_DXF_PtAdd($aPts, $fLp, $fH / 2)
 	Else
-		_DXF_PtAdd($aPts, $fLp, 0)
+		_DXF_PtAdd($aPts, $fLp, $fBotDL)
 	EndIf
-	; Bord droit, bord supérieur (encoches hautes), bord gauche.
-	_DXF_PtAdd($aPts, $fLp, $fH)
-	_DXF_EmitTopFeatures($aPts, $aTopLoc, $fH)
-	_DXF_PtAdd($aPts, 0, $fH)
+	; Bord droit (raccourci si une encoche haute s'arrête déjà là), bord
+	; supérieur (encoches hautes), bord gauche (idem, symétrique).
+	_DXF_PtAdd($aPts, $fLp, $fH - $fTopDL)
+	_DXF_EmitTopFeatures($aPts, $aTopLoc, $fH, $fLp)
+	_DXF_PtAdd($aPts, 0, $fH - $fTopD0)
 EndFunc   ;==>_DXF_BuildSepPiece
 
 ; -----------------------------------------------------------------------------
@@ -566,7 +647,7 @@ Func _DXF_BuildSidePiece($fLen, $fHs, $fT, $fTFloor, $bTabs, ByRef $aFingers, By
 
 	_DXF_PtInit($aPts)
 	_DXF_PtAdd($aPts, 0, 0)
-	_DXF_EmitBottomFeatures($aPts, $aFeat)
+	_DXF_EmitBottomFeatures($aPts, $aFeat, $fLen)
 	_DXF_PtAdd($aPts, $fLen, 0)
 	; Bord droit (montant) : queues droites.
 	For $i = 0 To UBound($aFingers) - 1
@@ -577,7 +658,7 @@ Func _DXF_BuildSidePiece($fLen, $fHs, $fT, $fTFloor, $bTabs, ByRef $aFingers, By
 	Next
 	_DXF_PtAdd($aPts, $fLen, $fHs)
 	; Bord supérieur (droite → gauche) : encoches des séparateurs.
-	_DXF_EmitTopFeatures($aPts, $aSlots, $fHs)
+	_DXF_EmitTopFeatures($aPts, $aSlots, $fHs, $fLen)
 	_DXF_PtAdd($aPts, 0, $fHs)
 	; Bord gauche (descendant) : queues droites (miroir).
 	For $i = UBound($aFingers) - 1 To 0 Step -1
@@ -591,7 +672,7 @@ EndFunc   ;==>_DXF_BuildSidePiece
 ; Encoches supérieures d'un côté : pour chaque run qui rencontre ce côté,
 ; intervalle local [s0|s1|prof]. $iOrientRun : orientation des runs concernés ;
 ; $iWallField : quelle extrémité du run touche CE côté ; $fSOffset : conversion
-; position monde → coordonnée locale du côté.
+; position fond → coordonnée locale du côté.
 Func _DXF_SideSlots($iOrientRun, $iWallField, $fSOffset, $fHs, ByRef $aOut)
 	ReDim $aOut[0][3]
 	For $i = 0 To UBound($g_aDxfRuns) - 1
@@ -656,24 +737,24 @@ Func DXF_Export($sPath)
 	Local $aNoHoles[0][4]
 	Local $aSlots[0][3]
 
-	; Nord (y monde = 0) : les séparateurs VERTICAUX dont la portée commence à
-	; la paroi nord ; s local = X monde.
+	; Nord (y fond = 0) : les séparateurs VERTICAUX dont la portée commence à
+	; la paroi nord ; s local = X fond (les runs sont dans le repère du fond).
 	_DXF_SideSlots($SEP_ORIENT_V, $DXFRUN_WALL1, 0, $fHs, $aSlots)
 	_DXF_BuildSidePiece($fW, $fHs, $fT, $fT, False, $aFingers, $aSlots, $aTenNS, $aPts)
 	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE NORD")
 
-	; Sud (y monde = L) : portée des verticaux finissant à la paroi sud.
+	; Sud (y fond = L) : portée des verticaux finissant à la paroi sud.
 	_DXF_SideSlots($SEP_ORIENT_V, $DXFRUN_WALL2, 0, $fHs, $aSlots)
 	_DXF_BuildSidePiece($fW, $fHs, $fT, $fT, False, $aFingers, $aSlots, $aTenNS, $aPts)
 	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE SUD")
 
-	; Ouest (x monde = 0) : horizontaux commençant à la paroi ouest ;
-	; s local = Y monde − épaisseur (le côté E/O court entre les côtés N/S).
+	; Ouest (x fond = 0) : horizontaux commençant à la paroi ouest ;
+	; s local = Y fond − épaisseur (le côté E/O court entre les côtés N/S).
 	_DXF_SideSlots($SEP_ORIENT_H, $DXFRUN_WALL1, -$fT, $fHs, $aSlots)
 	_DXF_BuildSidePiece($fL - 2 * $fT, $fHs, $fT, $fT, True, $aFingers, $aSlots, $aTenEW, $aPts)
 	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE OUEST")
 
-	; Est (x monde = W) : horizontaux finissant à la paroi est.
+	; Est (x fond = W) : horizontaux finissant à la paroi est.
 	_DXF_SideSlots($SEP_ORIENT_H, $DXFRUN_WALL2, -$fT, $fHs, $aSlots)
 	_DXF_BuildSidePiece($fL - 2 * $fT, $fHs, $fT, $fT, True, $aFingers, $aSlots, $aTenEW, $aPts)
 	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE EST")
@@ -719,7 +800,8 @@ EndFunc   ;==>_DXF_LayerDef
 
 ; -----------------------------------------------------------------------------
 ; Contour du fond : W×L avec encoches de pourtour (profondeur = épaisseur des
-; parois) recevant les tenons des 4 côtés. Coordonnées locales = monde.
+; parois) recevant les tenons des 4 côtés. Coordonnées locales = repère fond
+; (celui des runs : origine au coin extérieur bas-gauche).
 ; -----------------------------------------------------------------------------
 Func _DXF_BuildFloorOutline($fW, $fL, $fT, ByRef $aTenNS, ByRef $aTenEW, ByRef $aPts)
 	_DXF_PtInit($aPts)
@@ -760,8 +842,8 @@ EndFunc   ;==>_DXF_BuildFloorOutline
 
 ; -----------------------------------------------------------------------------
 ; Trous du fond : un rectangle par tenon de séparateur, exactement aux
-; coordonnées monde du tenon (les créneaux générés correspondent par
-; construction : mêmes intervalles $g_aDxfTenons).
+; coordonnées du tenon dans le repère fond (les créneaux générés correspondent
+; par construction : mêmes intervalles $g_aDxfTenons).
 ; -----------------------------------------------------------------------------
 Func _DXF_FloorHoles(ByRef $aHoles)
 	ReDim $aHoles[UBound($g_aDxfTenons)][4]

@@ -63,6 +63,7 @@ Global $g_iRdrH         = 1
 Global $g_hRdrFontFamily    = 0
 Global $g_hRdrFontUi        = 0
 Global $g_hRdrFormatDefault = 0
+Global $g_hRdrFormatCenter  = 0 ; alignement centré H+V (labels de taille de zone)
 Global $g_hRdrBrushText     = 0
 Global $g_hRdrPenAccent     = 0
 Global $g_hRdrPenGridMinor  = 0
@@ -167,6 +168,9 @@ Func Renderer_CreateSharedObjects()
 	$g_hRdrFontFamily = _GDIPlus_FontFamilyCreate("Segoe UI")
 	$g_hRdrFontUi = _GDIPlus_FontCreate($g_hRdrFontFamily, 10)
 	$g_hRdrFormatDefault = _GDIPlus_StringFormatCreate()
+	$g_hRdrFormatCenter = _GDIPlus_StringFormatCreate()
+	_GDIPlus_StringFormatSetAlign($g_hRdrFormatCenter, 1)     ; StringAlignmentCenter (0=Near,1=Center,2=Far)
+	_GDIPlus_StringFormatSetLineAlign($g_hRdrFormatCenter, 1) ; idem, axe vertical
 	$g_hRdrBrushText = _GDIPlus_BrushCreateSolid($RDR_COLOR_TEXT)
 	$g_hRdrPenAccent = _GDIPlus_PenCreate($RDR_COLOR_ACCENT)
 	$g_hRdrPenGridMinor = _GDIPlus_PenCreate($RDR_COLOR_GRID_MINOR)
@@ -232,6 +236,10 @@ Func Renderer_DisposeSharedObjects()
 		_GDIPlus_BrushDispose($g_hRdrBrushText)
 		$g_hRdrBrushText = 0
 	EndIf
+	If $g_hRdrFormatCenter <> 0 Then
+		_GDIPlus_StringFormatDispose($g_hRdrFormatCenter)
+		$g_hRdrFormatCenter = 0
+	EndIf
 	If $g_hRdrFormatDefault <> 0 Then
 		_GDIPlus_StringFormatDispose($g_hRdrFormatDefault)
 		$g_hRdrFormatDefault = 0
@@ -274,6 +282,7 @@ Func Renderer_Frame()
 	Renderer_DrawBox()
 	Renderer_DrawHoverZone()
 	Renderer_DrawSeparators()
+	Renderer_DrawZoneLabels()
 	Renderer_DrawHud()
 
 	Renderer_Present()
@@ -421,6 +430,51 @@ Func Renderer_DrawSeparators()
 		EndIf
 	Next
 EndFunc   ;==>Renderer_DrawSeparators
+
+; Format d'affichage d'une valeur en mm : 2 décimales max, sans zéros inutiles.
+; Copie locale du pattern déjà dupliqué dans UI_FmtMm/_Zones_FmtToken : le
+; Renderer (niveau 3) ne doit pas dépendre de l'UI (niveau 4).
+Func _Renderer_FmtMm($fValue)
+	Local $s = StringFormat("%.2f", $fValue)
+	$s = StringRegExpReplace($s, "0+$", "")
+	Return StringRegExpReplace($s, "\.$", "")
+EndFunc   ;==>_Renderer_FmtMm
+
+; -----------------------------------------------------------------------------
+; Taille des sous-zones, au centre : "largeur × hauteur" affiché seulement si
+; le texte tient dans le rectangle écran de la zone. Zones concernées selon
+; le mode courant (App_GetZoneLabelMode, réglé par le menu Affichage) :
+; aucune / seulement la zone survolée / toutes.
+; -----------------------------------------------------------------------------
+Func Renderer_DrawZoneLabels()
+	Local $iMode = App_GetZoneLabelMode()
+	If $iMode = $APP_ZONELABEL_NEVER Then Return
+
+	Local $iHoverZone = Selection_GetHoverZone()
+	For $i = 0 To Zones_Count() - 1
+		If $iMode = $APP_ZONELABEL_HOVER And $i <> $iHoverZone Then ContinueLoop
+
+		Local $fW = $g_aZones[$i][$ZONE_X2] - $g_aZones[$i][$ZONE_X1]
+		Local $fH = $g_aZones[$i][$ZONE_Y2] - $g_aZones[$i][$ZONE_Y1]
+		If $fW <= 0 Or $fH <= 0 Then ContinueLoop
+
+		Local $iX0 = Camera_WorldToScreenX($g_aZones[$i][$ZONE_X1])
+		Local $iX1 = Camera_WorldToScreenX($g_aZones[$i][$ZONE_X2])
+		; Axe Y inversé à l'écran : le haut du rectangle correspond au Y monde max.
+		Local $iY0 = Camera_WorldToScreenY($g_aZones[$i][$ZONE_Y2])
+		Local $iY1 = Camera_WorldToScreenY($g_aZones[$i][$ZONE_Y1])
+		Local $iZoneW = $iX1 - $iX0
+		Local $iZoneH = $iY1 - $iY0
+
+		Local $sText = _Renderer_FmtMm($fW) & " × " & _Renderer_FmtMm($fH)
+		Local $tLayout = _GDIPlus_RectFCreate($iX0, $iY0, $iZoneW, $iZoneH)
+		Local $aInfo = _GDIPlus_GraphicsMeasureString($g_hRdrGfx, $sText, $g_hRdrFontUi, $tLayout, $g_hRdrFormatDefault)
+		If DllStructGetData($aInfo[0], "Width") + 4 > $iZoneW Then ContinueLoop
+		If DllStructGetData($aInfo[0], "Height") + 4 > $iZoneH Then ContinueLoop
+
+		_GDIPlus_GraphicsDrawStringEx($g_hRdrGfx, $sText, $g_hRdrFontUi, $tLayout, $g_hRdrFormatCenter, $g_hRdrBrushText)
+	Next
+EndFunc   ;==>Renderer_DrawZoneLabels
 
 ; Assombrit une couleur ARGB de moitié (contours des séparateurs).
 Func Renderer_DarkenColor($iArgb)

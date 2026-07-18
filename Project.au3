@@ -22,12 +22,14 @@ Global $g_aPrjBox[$BOX_FIELD_COUNT]
 Global $g_aPrjLayers[$LAYERS_COUNT][$LAYER_FIELD_COUNT]
 Global $g_aPrjSeps[0][$SEP_FIELD_COUNT]
 
-; --- Origine de la boîte (coin bas-gauche extérieur, monde) ---
-; INVARIANT : (0,0) en dehors d'un drag de bord. Pendant le drag d'un bord
-; O/N, l'origine suit le curseur (coordonnées négatives permises) pour que
-; le bord opposé reste visuellement fixe ; au relâchement, le métier recale
-; tout en (0,0) (Metier_EndBoxResize). La persistance et l'export DXF ne
-; voient JAMAIS d'origine non nulle.
+; --- Origine de la boîte (coin bas-gauche INTÉRIEUR, monde) ---
+; INVARIANT : (0,0) en dehors d'un drag de bord — l'origine monde est donc
+; toujours le coin bas-gauche de l'intérieur de la boîte (le coin extérieur
+; est en (−épaisseur, −épaisseur)). Pendant le drag d'un bord O/N, l'origine
+; suit le curseur (coordonnées négatives permises) pour que le bord opposé
+; reste visuellement fixe ; au relâchement, le métier recale tout en (0,0)
+; (Metier_EndBoxResize). La persistance et l'export DXF ne voient JAMAIS
+; d'origine non nulle.
 Global $g_fPrjBoxOrgX = 0.0
 Global $g_fPrjBoxOrgY = 0.0
 
@@ -60,22 +62,23 @@ Func Project_BoxSetOrg($fX, $fY)
 	$g_fPrjBoxOrgY = $fY
 EndFunc   ;==>Project_BoxSetOrg
 
-; Rectangle extérieur de la boîte (monde, mm).
+; Rectangle extérieur de la boîte (monde, mm) : l'origine étant le coin
+; intérieur, l'extérieur déborde d'une épaisseur de chaque côté.
 Func Project_BoxOuter(ByRef $fX1, ByRef $fY1, ByRef $fX2, ByRef $fY2)
-	$fX1 = $g_fPrjBoxOrgX
-	$fY1 = $g_fPrjBoxOrgY
-	$fX2 = $g_fPrjBoxOrgX + $g_aPrjBox[$BOX_WIDTH]
-	$fY2 = $g_fPrjBoxOrgY + $g_aPrjBox[$BOX_LENGTH]
+	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	$fX1 = $g_fPrjBoxOrgX - $fT
+	$fY1 = $g_fPrjBoxOrgY - $fT
+	$fX2 = $fX1 + $g_aPrjBox[$BOX_WIDTH]
+	$fY2 = $fY1 + $g_aPrjBox[$BOX_LENGTH]
 EndFunc   ;==>Project_BoxOuter
 
 ; Rectangle intérieur de la boîte (monde, mm) : là où vivent les sous-zones.
+; Son coin bas-gauche EST l'origine de la boîte (0,0 hors drag de bord).
 Func Project_BoxInterior(ByRef $fX1, ByRef $fY1, ByRef $fX2, ByRef $fY2)
-	Project_BoxOuter($fX1, $fY1, $fX2, $fY2)
-	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
-	$fX1 += $fT
-	$fY1 += $fT
-	$fX2 -= $fT
-	$fY2 -= $fT
+	$fX1 = $g_fPrjBoxOrgX
+	$fY1 = $g_fPrjBoxOrgY
+	$fX2 = $g_fPrjBoxOrgX + $g_aPrjBox[$BOX_WIDTH] - 2 * $g_aPrjBox[$BOX_THICKNESS]
+	$fY2 = $g_fPrjBoxOrgY + $g_aPrjBox[$BOX_LENGTH] - 2 * $g_aPrjBox[$BOX_THICKNESS]
 EndFunc   ;==>Project_BoxInterior
 
 ; --- Accès à la boîte ---------------------------------------------------------

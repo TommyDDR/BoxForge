@@ -52,7 +52,8 @@ Global $g_aIsects[0][$ISECT_FIELD_COUNT]
 ; --- Contraintes et tolérances ---
 Global Const $ZONES_MIN_GAP      = 10.0   ; écart minimal entre séparateurs (mm)
 Global Const $ZONES_EPS          = 0.0005 ; tolérance de comparaison flottante (mm)
-Global Const $ZONES_MOVE_STEP_MM = 5.0    ; pas maximal d'un déplacement métier (mm)
+Global Const $ZONES_MOVE_STEP_MM = 5.0    ; pas minimal d'un déplacement métier (mm)
+Global Const $ZONES_MOVE_MAX_STEPS = 40   ; pas répartis sur un déplacement d'un coup
 
 ; --- Helpers numériques locaux -------------------------------------------------
 Func _Zones_Clamp($fValue, $fLo, $fHi)
@@ -72,6 +73,16 @@ EndFunc   ;==>_Zones_Clamp
 ; changement de dimensions de la boîte, chargement de projet).
 ; -----------------------------------------------------------------------------
 Func Zones_Rebuild()
+	_Zones_RebuildZonesOnly()
+	Zones_RebuildIntersections()
+EndFunc   ;==>Zones_Rebuild
+
+; Partie coûteuse (O(n²)) de Zones_Rebuild SANS les intersections : utilisée
+; pour les pas intermédiaires d'un déplacement (_Metier_MoveOne), où les
+; intersections ($g_aIsects, données de reporting seulement) n'ont pas besoin
+; d'être à jour à chaque pas — l'appelant de haut niveau les refait une seule
+; fois à la fin du déplacement.
+Func _Zones_RebuildZonesOnly()
 	; Sous-zone initiale : l'intérieur complet de la boîte.
 	Local $fIx1, $fIy1, $fIx2, $fIy2
 	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
@@ -85,9 +96,7 @@ Func Zones_Rebuild()
 	For $iRow = 0 To Project_SepCount() - 1
 		_Zones_ApplySplit($iRow)
 	Next
-
-	Zones_RebuildIntersections()
-EndFunc   ;==>Zones_Rebuild
+EndFunc   ;==>_Zones_RebuildZonesOnly
 
 Func Zones_Count()
 	Return UBound($g_aZones)
@@ -373,6 +382,59 @@ Func _Zones_SetGroupPos($iRow, $fPos)
 EndFunc   ;==>_Zones_SetGroupPos
 
 ; -----------------------------------------------------------------------------
+; Après un déplacement EN UN SEUL PAS (cf. $bSingleStep de _Metier_MoveOne) du
+; séparateur $iRow (et de son groupe) depuis $fOldPos : fait suivre les ancres
+; des séparateurs PERPENDICULAIRES dont la portée s'appuyait sur lui.
+; Le déplacement par petits pas garantit cette cohérence naturellement (l'ancre,
+; re-normalisée au milieu de portée à chaque pas, ne peut pas être enjambée par
+; un pas borné) ; en un seul pas, un grand delta peut passer PAR-DESSUS une
+; ancre restée en place : au recalcul, le perpendiculaire serait rattaché à la
+; sous-zone de l'AUTRE côté (un horizontal à droite d'un vertical "sautait" à
+; sa gauche lors d'un drag rapide). On déplace donc l'extrémité d'appui de
+; chaque ancre AVANT le recalcul : le perpendiculaire reste du même côté,
+; quelle que soit l'amplitude du pas.
+; À appeler APRÈS l'écriture de la nouvelle position, AVANT le recalcul des
+; sous-zones (les portées lues ici sont encore celles d'avant le déplacement).
+; -----------------------------------------------------------------------------
+Func _Zones_FollowAbuttingAnchors($iRow, $fOldPos)
+	Local $iOrient = Project_SepGet($iRow, $SEP_ORIENT)
+	Local $fNewPos = Project_SepGet($iRow, $SEP_POS)
+	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
+
+	For $i = 0 To Project_SepCount() - 1
+		If Project_SepGet($i, $SEP_ORIENT) = $iOrient Then ContinueLoop
+
+		; Une extrémité de la portée du perpendiculaire sur l'ANCIENNE position…
+		Local $fS1 = Project_SepGet($i, $SEP_SPAN1)
+		Local $fS2 = Project_SepGet($i, $SEP_SPAN2)
+		Local $bAtS1 = (Abs($fS1 - $fOldPos) <= $ZONES_EPS)
+		If Not $bAtS1 And Abs($fS2 - $fOldPos) > $ZONES_EPS Then ContinueLoop
+
+		; … et sa ligne croise la portée d'un des segments déplacés (deux
+		; parallèles non liés peuvent partager la même position avec des
+		; portées disjointes : ne pas confondre leurs appuis).
+		Local $fPerpPos = Project_SepGet($i, $SEP_POS)
+		Local $bTouches = False
+		For $j = 0 To Project_SepCount() - 1
+			If $j <> $iRow And ($iGroup = $SEP_NO_GROUP Or Project_SepGet($j, $SEP_GROUP) <> $iGroup) Then ContinueLoop
+			If $fPerpPos < Project_SepGet($j, $SEP_SPAN1) - $ZONES_EPS Then ContinueLoop
+			If $fPerpPos > Project_SepGet($j, $SEP_SPAN2) + $ZONES_EPS Then ContinueLoop
+			$bTouches = True
+			ExitLoop
+		Next
+		If Not $bTouches Then ContinueLoop
+
+		; L'extrémité d'appui suit le déplacement : ancre re-posée au milieu
+		; de la portée attendue (même normalisation que _Zones_ApplySplit).
+		If $bAtS1 Then
+			Project_SepSet($i, $SEP_ANCHOR, ($fNewPos + $fS2) / 2)
+		Else
+			Project_SepSet($i, $SEP_ANCHOR, ($fS1 + $fNewPos) / 2)
+		EndIf
+	Next
+EndFunc   ;==>_Zones_FollowAbuttingAnchors
+
+; -----------------------------------------------------------------------------
 ; PRIMITIVE de déplacement d'un séparateur (par identifiant) vers $fTarget.
 ; C'est le SEUL chemin qui change une position : le drag, la saisie directe,
 ; les groupes SHIFT et la propagation des formules passent tous par ici.
@@ -382,15 +444,60 @@ EndFunc   ;==>_Zones_SetGroupPos
 ;   topologie évolue continûment (les portées des séparateurs perpendiculaires
 ;   s'ajustent au fur et à mesure), même pour une grande distance demandée
 ;   d'un coup (saisie directe, formule).
+;   Le pas est ADAPTATIF ($ZONES_MOVE_STEP_MM minimum, distance totale répartie
+;   sur $ZONES_MOVE_MAX_STEPS sinon) : un petit déplacement (drag souris normal)
+;   garde la granularité fine d'origine, un grand déplacement d'un coup (grand
+;   mouvement de drag, formule) est réparti sur un nombre borné de pas — sans
+;   quoi jusqu'à 400 recalculs complets de sous-zones (coût O(n²) chacun)
+;   s'enchaîneraient dans un seul événement souris et gèleraient l'UI.
+;   Les intersections ($g_aIsects) ne sont recalculées qu'une fois à la fin
+;   (simple donnée de reporting, inutile de la tenir à jour à chaque pas).
+; $bSingleStep (drag souris EN DIRECT, cf. Metier_DragSeparator) : saute la
+;   subdivision — un seul clamp + un seul recalcul, quelle que soit la
+;   distance demandée. La granularité vient déjà de la cadence des
+;   WM_MOUSEMOVE (un appel = un pas réel) ; subdiviser EN PLUS à l'intérieur
+;   de chaque appel revenait à multiplier jusqu'à 40 recalculs O(n²) par
+;   événement — pendant un drag rapide (grands déltas écran → grands déltas
+;   monde entre deux WM_MOUSEMOVE), ce coût se répétait à CHAQUE événement et
+;   le traitement prenait du retard sur la souris (gel qui grossit puis
+;   "rattrape" d'un coup). Les portées perpendiculaires qui n'ont pas eu le
+;   temps de suivre progressivement se remettent à jour au prochain
+;   WM_MOUSEMOVE de toute façon.
 ; NE propage PAS les formules (voir Metier_MoveSeparator / ApplyFormulas).
 ; Retourne True si la position a effectivement changé.
 ; -----------------------------------------------------------------------------
-Func _Metier_MoveOne($iId, $fTarget)
+Func _Metier_MoveOne($iId, $fTarget, $bSingleStep = False)
 	Local $iRow = Project_SepFindById($iId)
 	If $iRow = -1 Then Return False
 
+	; La cible est alignée sur la granularité du modèle (centième) : une cible
+	; plus fine serait inatteignable — la position, arrondie à l'écriture,
+	; resterait à jamais à plus de $ZONES_EPS de la cible et la boucle
+	; épuiserait son garde-fou en recalculs inutiles (freeze au drag).
+	$fTarget = Round($fTarget, 2)
+
+	If $bSingleStep Then
+		Local $fMin, $fMax
+		Zones_GetMoveRange($iRow, $fMin, $fMax)
+		If $fMin > $fMax Then Return False ; aucun jeu disponible
+
+		Local $fPos = Project_SepGet($iRow, $SEP_POS)
+		Local $fClamped = _Zones_Clamp($fTarget, $fMin, $fMax)
+		If Abs($fClamped - $fPos) <= $ZONES_EPS Then Return False
+
+		_Zones_SetGroupPos($iRow, $fClamped)
+		If Abs(Project_SepGet($iRow, $SEP_POS) - $fPos) <= $ZONES_EPS Then Return False ; absorbé par l'arrondi
+		_Zones_FollowAbuttingAnchors($iRow, $fPos)
+		_Zones_RebuildZonesOnly()
+		Zones_RebuildIntersections()
+		Return True
+	EndIf
+
+	Local $fStep = Abs($fTarget - Project_SepGet($iRow, $SEP_POS)) / $ZONES_MOVE_MAX_STEPS
+	If $fStep < $ZONES_MOVE_STEP_MM Then $fStep = $ZONES_MOVE_STEP_MM
+
 	Local $bMoved = False
-	For $iGuard = 1 To 400 ; garde-fou : 400 pas × 5 mm = 2 m de course maxi
+	For $iGuard = 1 To 400 ; garde-fou absolu
 		Local $fMin, $fMax
 		Zones_GetMoveRange($iRow, $fMin, $fMax)
 		If $fMin > $fMax Then ExitLoop ; aucun jeu disponible
@@ -399,13 +506,17 @@ Func _Metier_MoveOne($iId, $fTarget)
 		Local $fDelta = _Zones_Clamp($fTarget, $fMin, $fMax) - $fPos
 		If Abs($fDelta) <= $ZONES_EPS Then ExitLoop
 
-		If $fDelta > $ZONES_MOVE_STEP_MM Then $fDelta = $ZONES_MOVE_STEP_MM
-		If $fDelta < -$ZONES_MOVE_STEP_MM Then $fDelta = -$ZONES_MOVE_STEP_MM
+		If $fDelta > $fStep Then $fDelta = $fStep
+		If $fDelta < -$fStep Then $fDelta = -$fStep
 
 		_Zones_SetGroupPos($iRow, $fPos + $fDelta)
-		Zones_Rebuild()
+		; Pas absorbé par l'arrondi : position inchangée, ne pas recalculer ni
+		; prétendre avoir bougé (l'appelant s'appuie sur ce retour pour sortir).
+		If Abs(Project_SepGet($iRow, $SEP_POS) - $fPos) <= $ZONES_EPS Then ExitLoop
+		_Zones_RebuildZonesOnly()
 		$bMoved = True
 	Next
+	If $bMoved Then Zones_RebuildIntersections()
 	Return $bMoved
 EndFunc   ;==>_Metier_MoveOne
 
@@ -416,19 +527,30 @@ EndFunc   ;==>_Metier_MoveOne
 ; formules : un séparateur piloté qui borne le pilote s'écarte en suivant sa
 ; formule, et le pilote peut alors continuer — le pilote "pousse" ses pilotés
 ; jusqu'à la cible ou jusqu'à un vrai blocage (paroi, séparateur libre).
+; $bSingleStep (drag souris EN DIRECT, cf. Metier_DragSeparator) : un seul
+; passage (un clamp + un recalcul), pas de boucle de progression — même
+; raison qu'au même paramètre de _Metier_MoveOne, qu'il propage ici : la
+; cadence des WM_MOUSEMOVE fournit déjà la granularité, ré-itérer EN PLUS à
+; l'intérieur d'un seul événement ne fait que multiplier les recalculs O(n²)
+; sans rien gagner en fluidité (le rattrapage se fait de toute façon à
+; l'événement suivant).
 ; -----------------------------------------------------------------------------
-Func Metier_MoveSeparator($iId, $fTarget)
+Func Metier_MoveSeparator($iId, $fTarget, $bSingleStep = False)
 	Local $iRow = Project_SepFindById($iId)
 	If $iRow = -1 Then Return False
 	If Project_SepGet($iRow, $SEP_FORMULA) <> "" Then Return False ; piloté
+
+	; Même granularité que le modèle : le test de convergence ci-dessous
+	; compare à une position arrondie au centième.
+	$fTarget = Round($fTarget, 2)
 
 	; Met d'abord les pilotés à leur place : l'un d'eux peut être collé au
 	; pilote alors que sa formule l'attend plus loin (il libère le passage).
 	Metier_ApplyFormulas()
 
 	Local $bMoved = False
-	For $iGuard = 1 To 100
-		If Not _Metier_MoveOne($iId, $fTarget) Then ExitLoop ; plus aucun progrès
+	For $iGuard = 1 To ($bSingleStep ? 1 : 100)
+		If Not _Metier_MoveOne($iId, $fTarget, $bSingleStep) Then ExitLoop ; plus aucun progrès
 		$bMoved = True
 		Metier_ApplyFormulas() ; les pilotés suivent / s'écartent
 
@@ -437,6 +559,72 @@ Func Metier_MoveSeparator($iId, $fTarget)
 	Next
 	Return $bMoved
 EndFunc   ;==>Metier_MoveSeparator
+
+; -----------------------------------------------------------------------------
+; True si $sFormula est EXACTEMENT de la forme "VAR", "VAR + K" ou "VAR - K"
+; (une seule variable — référence "sN.pos" OU variable boîte "b.w/l/h/t" ou
+; "w/l/h/t" nue —, constante additive optionnelle) — pose $sVarToken (le texte
+; exact de la variable, à réinjecter tel quel dans la formule réécrite) et
+; $fVarValue (sa valeur COURANTE). Utilisé par Metier_DragSeparator : toute
+; formule plus riche (plusieurs variables, multiplication…) n'est PAS reconnue
+; ici et reste verrouillée au drag (cf. Metier_MoveSeparator).
+; -----------------------------------------------------------------------------
+Func Zones_FormulaIsLinearVar($sFormula, ByRef $sVarToken, ByRef $fVarValue, ByRef $fOffset)
+	Local $aM = StringRegExp($sFormula, "(?i)^\s*(s\d+\.pos|b\.[wlht]|[wlht])\s*([+\-]\s*[0-9]+(?:\.[0-9]+)?)?\s*$", 3)
+	If @error Then Return False
+	$sVarToken = $aM[0]
+	If Not _Zones_FormulaEval($sVarToken, $fVarValue) Then Return False ; référence morte (sN supprimé)
+	$fOffset = (UBound($aM) > 1 And $aM[1] <> "") ? Number(StringReplace($aM[1], " ", "")) : 0
+	Return True
+EndFunc   ;==>Zones_FormulaIsLinearVar
+
+; -----------------------------------------------------------------------------
+; Déplacement PAR GLISSEMENT SOURIS d'un séparateur : contrairement à
+; Metier_MoveSeparator (saisie directe), un séparateur piloté par une formule
+; "VAR [+ K]" simple (cf. Zones_FormulaIsLinearVar — "sN.pos" ou une variable
+; boîte) n'est plus verrouillé — le glisser est autorisé et la constante K de
+; la formule est réécrite pour refléter la nouvelle position (le pilotage par
+; VAR est conservé). Toute formule plus complexe reste verrouillée
+; (comportement inchangé pour ces cas). La saisie directe d'un nombre dans le
+; champ Position continue, elle, de LIBÉRER la formule (cf.
+; UI_ApplySeparatorPosition) — comportement distinct, volontairement inchangé.
+; -----------------------------------------------------------------------------
+Func Metier_DragSeparator($iId, $fTarget)
+	Local $iRow = Project_SepFindById($iId)
+	If $iRow = -1 Then Return False
+
+	Local $sFormula = Project_SepGet($iRow, $SEP_FORMULA)
+	If $sFormula = "" Then Return Metier_MoveSeparator($iId, $fTarget, True)
+
+	Local $sVarToken, $fVarValue, $fOffset
+	If Not Zones_FormulaIsLinearVar($sFormula, $sVarToken, $fVarValue, $fOffset) Then Return False ; verrouillé
+
+	; Déplace directement via la primitive bas niveau (pas de garde "piloté" —
+	; seul Metier_MoveSeparator l'a) : un seul pas, comme pour un séparateur
+	; libre (cf. $bSingleStep de _Metier_MoveOne) — appelé à chaque
+	; WM_MOUSEMOVE, la granularité vient déjà de la souris.
+	If Not _Metier_MoveOne($iId, $fTarget, True) Then Return False
+
+	; Réécrit la formule avec la constante correspondant à la position
+	; réellement atteinte (après clamp), pour la ligne ET son groupe (même
+	; partage que Metier_SetSeparatorFormula).
+	$iRow = Project_SepFindById($iId)
+	Local $fNewOffset = Project_SepGet($iRow, $SEP_POS) - $fVarValue
+	Local $sNewFormula = $sVarToken
+	If Abs($fNewOffset) > $ZONES_EPS Then
+		$sNewFormula &= ($fNewOffset > 0 ? " + " & _Zones_FmtToken($fNewOffset) : " - " & _Zones_FmtToken(-$fNewOffset))
+	EndIf
+
+	Local $iGroup = Project_SepGet($iRow, $SEP_GROUP)
+	For $i = 0 To Project_SepCount() - 1
+		If $i = $iRow Or ($iGroup <> $SEP_NO_GROUP And Project_SepGet($i, $SEP_GROUP) = $iGroup) Then
+			Project_SepSet($i, $SEP_FORMULA, $sNewFormula)
+		EndIf
+	Next
+
+	Metier_ApplyFormulas() ; propage aux séparateurs qui dépendent de celui-ci
+	Return True
+EndFunc   ;==>Metier_DragSeparator
 
 ; =============================================================================
 ; FORMULES DE POSITION
@@ -448,7 +636,8 @@ EndFunc   ;==>Metier_MoveSeparator
 ;   b.l ou l → longueur intérieure (Length − 2 × épaisseur)
 ;   b.h ou h → hauteur intérieure  (Height − épaisseur du fond)
 ;   b.t ou t → épaisseur du matériau de la structure
-; Exemple : "w / 2 + t" (au milieu de l'intérieur, décalé d'une épaisseur).
+; Les positions étant relatives au coin intérieur de la boîte (origine 0,0),
+; "w / 2" place un séparateur vertical au milieu de l'intérieur.
 ; Caractères autorisés : chiffres, point décimal, espaces, + - * / ( ) et
 ; ces jetons — rien d'autre (l'évaluation refuse tout le reste : aucune
 ; injection possible via Execute).
@@ -612,6 +801,69 @@ Func Metier_FormulaValidate($sFormula, $iSelfId)
 EndFunc   ;==>Metier_FormulaValidate
 
 ; -----------------------------------------------------------------------------
+; True si la formule référence au moins une variable (séparateur ou boîte) —
+; utilisé par l'UI pour savoir si l'aperçu de saisie doit afficher la bulle
+; de traduction (une formule purement numérique n'a rien à traduire).
+; -----------------------------------------------------------------------------
+Func Zones_FormulaHasVariable($sFormula)
+	If StringRegExp($sFormula, "(?i)s\d+\.pos") Then Return True
+	If StringRegExp($sFormula, "(?i)\bb\.[wlht]\b") Then Return True
+	If StringRegExp($sFormula, "(?i)\b[wlht]\b") Then Return True
+	Return False
+EndFunc   ;==>Zones_FormulaHasVariable
+
+; Formate une valeur pour l'affichage dans une formule traduite : 2 décimales
+; maximum, sans zéros inutiles (même règle que UI_FmtMm, dupliquée ici pour ne
+; pas faire dépendre ce module métier de l'UI — cf. règle de niveaux en tête).
+Func _Zones_FmtToken($fValue)
+	Local $s = StringFormat("%.2f", $fValue)
+	$s = StringRegExpReplace($s, "0+$", "")
+	Return StringRegExpReplace($s, "\.$", "")
+EndFunc   ;==>_Zones_FmtToken
+
+; -----------------------------------------------------------------------------
+; Traduit une formule en substituant ses jetons par leurs valeurs COURANTES,
+; formatées lisiblement (pas d'évaluation arithmétique : les opérateurs restent
+; en clair) — utilisé par l'UI pour l'aperçu affiché pendant la saisie
+; ("s1.pos + 20" → "120 + 20"). Retourne True et pose $sOut, ou False si une
+; référence est introuvable.
+; -----------------------------------------------------------------------------
+Func Zones_FormulaTranslate($sFormula, ByRef $sOut)
+	Local $aIds[0]
+	_Zones_FormulaRefs($sFormula, $aIds)
+	Local $sExpr = $sFormula
+	For $i = 0 To UBound($aIds) - 1
+		Local $iRow = Project_SepFindById($aIds[$i])
+		If $iRow = -1 Then Return False
+		$sExpr = StringRegExpReplace($sExpr, "(?i)s" & $aIds[$i] & "\.pos", _
+				_Zones_FmtToken(Project_SepGet($iRow, $SEP_POS)))
+	Next
+
+	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	Local $sW = _Zones_FmtToken($g_aPrjBox[$BOX_WIDTH] - 2 * $fT)
+	Local $sL = _Zones_FmtToken($g_aPrjBox[$BOX_LENGTH] - 2 * $fT)
+	Local $sH = _Zones_FmtToken($g_aPrjBox[$BOX_HEIGHT] - $fT)
+	Local $sT = _Zones_FmtToken($fT)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.w\b", $sW)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.l\b", $sL)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.h\b", $sH)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bb\.t\b", $sT)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bw\b", $sW)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bl\b", $sL)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bh\b", $sH)
+	$sExpr = StringRegExpReplace($sExpr, "(?i)\bt\b", $sT)
+
+	$sOut = $sExpr
+	Return True
+EndFunc   ;==>Zones_FormulaTranslate
+
+; Évalue une formule SANS rien modifier au modèle (aperçu de saisie) : simple
+; enveloppe publique de l'évaluateur privé, pour l'UI (Input.au3).
+Func Zones_FormulaPreviewEval($sFormula, ByRef $fOut)
+	Return _Zones_FormulaEval($sFormula, $fOut)
+EndFunc   ;==>Zones_FormulaPreviewEval
+
+; -----------------------------------------------------------------------------
 ; Pose (ou efface : "") la formule de position d'un séparateur — et de tous
 ; les segments de son groupe —, puis propage. Retourne "" ou le message
 ; d'erreur de validation (dans ce cas rien n'est modifié).
@@ -734,9 +986,9 @@ Func Metier_DeleteSeparator($iId)
 EndFunc   ;==>Metier_DeleteSeparator
 
 ; --- Bords de la boîte (drag de redimensionnement) ------------------------------
-; Noms en coordonnées MONDE : N = bord y=0, S = bord y=Length,
-; W = bord x=0, E = bord x=Width. (À l'écran, l'axe Y étant inversé,
-; le bord N apparaît en bas.)
+; Noms en coordonnées MONDE : N = bord extérieur Y minimal (y=−t au repos),
+; S = bord Y maximal, W = bord X minimal, E = bord X maximal. (À l'écran,
+; l'axe Y étant inversé, le bord N apparaît en bas.)
 Global Const $METIER_EDGE_W = 0
 Global Const $METIER_EDGE_E = 1
 Global Const $METIER_EDGE_N = 2
@@ -756,31 +1008,33 @@ Func Metier_ResizeBoxEdge($iEdge, $fWorldPos)
 	$fWorldPos = Round($fWorldPos, 2)
 	; Dimension minimale : les deux parois + une sous-zone exploitable.
 	Local $fMinDim = 2 * $g_aPrjBox[$BOX_THICKNESS] + 2 * $ZONES_MIN_GAP
-	Local $fOrgX = Project_BoxOrgX(), $fOrgY = Project_BoxOrgY()
+	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	Local $fOx1, $fOy1, $fOx2, $fOy2 ; les bords dragués sont les bords EXTÉRIEURS
+	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
 
 	Local $bChanged = False
 	Switch $iEdge
 		Case $METIER_EDGE_E
-			Local $fNewW = Round(_Zones_Clamp($fWorldPos - $fOrgX, $fMinDim, 1e9), 2)
+			Local $fNewW = Round(_Zones_Clamp($fWorldPos - $fOx1, $fMinDim, 1e9), 2)
 			If Abs($fNewW - $g_aPrjBox[$BOX_WIDTH]) > $ZONES_EPS Then $bChanged = Project_BoxSet($BOX_WIDTH, $fNewW)
 
 		Case $METIER_EDGE_S
-			Local $fNewL = Round(_Zones_Clamp($fWorldPos - $fOrgY, $fMinDim, 1e9), 2)
+			Local $fNewL = Round(_Zones_Clamp($fWorldPos - $fOy1, $fMinDim, 1e9), 2)
 			If Abs($fNewL - $g_aPrjBox[$BOX_LENGTH]) > $ZONES_EPS Then $bChanged = Project_BoxSet($BOX_LENGTH, $fNewL)
 
 		Case $METIER_EDGE_W
-			Local $fRight = $fOrgX + $g_aPrjBox[$BOX_WIDTH] ; bord fixe
-			Local $fNewOrgX = Round(_Zones_Clamp($fWorldPos, -1e9, $fRight - $fMinDim), 2)
-			If Abs($fNewOrgX - $fOrgX) > $ZONES_EPS And Project_BoxSet($BOX_WIDTH, Round($fRight - $fNewOrgX, 2)) Then
-				Project_BoxSetOrg($fNewOrgX, $fOrgY)
+			; Bord fixe : $fOx2. L'origine (coin intérieur) suit le bord dragué.
+			Local $fNewOx1 = Round(_Zones_Clamp($fWorldPos, -1e9, $fOx2 - $fMinDim), 2)
+			If Abs($fNewOx1 - $fOx1) > $ZONES_EPS And Project_BoxSet($BOX_WIDTH, Round($fOx2 - $fNewOx1, 2)) Then
+				Project_BoxSetOrg(Round($fNewOx1 + $fT, 2), Project_BoxOrgY())
 				$bChanged = True
 			EndIf
 
 		Case $METIER_EDGE_N
-			Local $fTop = $fOrgY + $g_aPrjBox[$BOX_LENGTH] ; bord fixe
-			Local $fNewOrgY = Round(_Zones_Clamp($fWorldPos, -1e9, $fTop - $fMinDim), 2)
-			If Abs($fNewOrgY - $fOrgY) > $ZONES_EPS And Project_BoxSet($BOX_LENGTH, Round($fTop - $fNewOrgY, 2)) Then
-				Project_BoxSetOrg($fOrgX, $fNewOrgY)
+			; Bord fixe : $fOy2. L'origine (coin intérieur) suit le bord dragué.
+			Local $fNewOy1 = Round(_Zones_Clamp($fWorldPos, -1e9, $fOy2 - $fMinDim), 2)
+			If Abs($fNewOy1 - $fOy1) > $ZONES_EPS And Project_BoxSet($BOX_LENGTH, Round($fOy2 - $fNewOy1, 2)) Then
+				Project_BoxSetOrg(Project_BoxOrgX(), Round($fNewOy1 + $fT, 2))
 				$bChanged = True
 			EndIf
 	EndSwitch

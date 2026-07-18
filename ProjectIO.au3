@@ -15,7 +15,7 @@
 ; Zones_Rebuild — le chargement recrée ainsi exactement le projet.
 ;
 ;   [BoxForge]
-;   Version=1
+;   Version=2
 ;   [Box]
 ;   Width=400 … (un champ par ligne)
 ;   [Layers]
@@ -28,7 +28,10 @@
 ; le projet courant n'est remplacé que si le fichier ENTIER est valide.
 ; =============================================================================
 
-Global Const $IO_FILE_VERSION = 1
+; Version 2 : les positions/ancres des séparateurs sont relatives au coin
+; bas-gauche INTÉRIEUR de la boîte (v1 : coin extérieur). Le chargement
+; accepte encore la v1 et décale ses positions d'une épaisseur de paroi.
+Global Const $IO_FILE_VERSION = 2
 Global Const $IO_FILE_EXT     = "bfp"
 
 ; Chemin du projet courant ("" = jamais enregistré).
@@ -69,6 +72,7 @@ Func ProjectIO_SaveTo($sPath)
 	$s &= "Thickness=" & Project_BoxGet($BOX_THICKNESS) & @CRLF
 	$s &= "FingerLen=" & Project_BoxGet($BOX_FINGER_LEN) & @CRLF
 	$s &= "FingerSpacing=" & Project_BoxGet($BOX_FINGER_SPACING) & @CRLF
+	$s &= "MainSepOrient=" & Project_BoxGet($BOX_MAIN_SEP_ORIENT) & @CRLF
 
 	; --- Layers (couleur en hexadécimal, dimensions en clair) ---
 	$s &= "[Layers]" & @CRLF
@@ -123,7 +127,8 @@ EndFunc   ;==>_ProjectIO_ReadPositive
 ; En cas de fichier invalide, le projet courant reste INTACT.
 ; -----------------------------------------------------------------------------
 Func ProjectIO_LoadFrom($sPath)
-	If IniRead($sPath, "BoxForge", "Version", "") <> String($IO_FILE_VERSION) Then Return False
+	Local $iVersion = Int(Number(IniRead($sPath, "BoxForge", "Version", "0")))
+	If $iVersion < 1 Or $iVersion > $IO_FILE_VERSION Then Return False
 
 	; --- Boîte → tampon local ---
 	Local $aBox[$BOX_FIELD_COUNT]
@@ -135,9 +140,18 @@ Func ProjectIO_LoadFrom($sPath)
 	$aBoxKeys[$BOX_FINGER_LEN] = "FingerLen"
 	$aBoxKeys[$BOX_FINGER_SPACING] = "FingerSpacing"
 	For $i = 0 To $BOX_FIELD_COUNT - 1
+		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop ; pas une dimension, cf. ci-dessous
 		$aBox[$i] = _ProjectIO_ReadPositive($sPath, "Box", $aBoxKeys[$i])
 		If @error Then Return False
 	Next
+
+	; Séparateur principal : champ ajouté après coup — absent des projets plus
+	; anciens (0 étant une valeur légitime, non lisible par _ProjectIO_ReadPositive
+	; qui exige une valeur strictement positive). Repli sur la valeur par défaut
+	; si absente ou invalide : pas de bump de version nécessaire.
+	$aBox[$BOX_MAIN_SEP_ORIENT] = Int(Number(IniRead($sPath, "Box", "MainSepOrient", $BOX_DEFAULT_MAIN_SEP_ORIENT)))
+	If Not Box_IsFieldValueValid($aBox, $BOX_MAIN_SEP_ORIENT, $aBox[$BOX_MAIN_SEP_ORIENT]) Then _
+			$aBox[$BOX_MAIN_SEP_ORIENT] = $BOX_DEFAULT_MAIN_SEP_ORIENT
 	; Cohérence minimale : un intérieur non vide doit exister.
 	Local $fMinDim = ($aBox[$BOX_WIDTH] < $aBox[$BOX_LENGTH]) ? $aBox[$BOX_WIDTH] : $aBox[$BOX_LENGTH]
 	If $aBox[$BOX_THICKNESS] * 2 >= $fMinDim Then Return False
@@ -181,6 +195,12 @@ Func ProjectIO_LoadFrom($sPath)
 		$aSeps[$i][$SEP_ORIENT] = $iOrient
 		$aSeps[$i][$SEP_POS] = Number($aParts[4])
 		$aSeps[$i][$SEP_ANCHOR] = Number($aParts[5])
+		; Migration v1 : positions/ancres relatives au coin EXTÉRIEUR de la
+		; boîte — l'origine est depuis le coin intérieur → décalage de −t.
+		If $iVersion = 1 Then
+			$aSeps[$i][$SEP_POS] -= $aBox[$BOX_THICKNESS]
+			$aSeps[$i][$SEP_ANCHOR] -= $aBox[$BOX_THICKNESS]
+		EndIf
 		$aSeps[$i][$SEP_LAYER] = $iLayer
 		$aSeps[$i][$SEP_SPAN1] = 0 ; dérivé : recalculé par Zones_Rebuild
 		$aSeps[$i][$SEP_SPAN2] = 0

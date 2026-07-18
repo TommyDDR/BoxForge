@@ -33,7 +33,9 @@ uniquement sur dirty flag.
 ## Contrôles
 
 L'affichage utilise un repère mathématique : l'origine monde (0,0) est **en
-bas à gauche** (axe Y vers le haut).
+bas à gauche** (axe Y vers le haut), sur le coin **intérieur** de la boîte —
+les positions des séparateurs se lisent donc directement depuis l'intérieur
+des parois (le coin extérieur est en (−épaisseur, −épaisseur)).
 
 - **Clic gauche** dans une sous-zone : créer un séparateur vertical
   (**CTRL** : horizontal, **SHIFT** : global — traverse toutes les sous-zones,
@@ -64,7 +66,8 @@ déplace plus directement — effacer la formule (saisir un nombre) le libère.
 - Opérateurs : `+ - * / ( )`, nombres décimaux, jetons `sN.pos`.
 - Variables boîte (dimensions **intérieures**) : `w`/`b.w` (largeur − 2×ép.),
   `l`/`b.l` (longueur − 2×ép.), `h`/`b.h` (hauteur − fond), `t`/`b.t`
-  (épaisseur). Exemple : `w / 2 + t`.
+  (épaisseur). Les positions étant relatives au coin intérieur, `w / 2`
+  place un séparateur vertical au milieu de l'intérieur.
 - Les chaînes de dépendances sont propagées en ordre topologique ; les
   références circulaires sont refusées à la saisie.
 - Les contraintes restent souveraines : une formule ne peut ni violer
