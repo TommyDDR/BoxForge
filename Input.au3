@@ -383,20 +383,21 @@ Func Input_PreviewLayerField($iIndex)
 	App_InvalidateView()
 EndFunc   ;==>Input_PreviewLayerField
 
-; Aperçu en direct du champ Position (nombre OU formule) :
-;   - un NOMBRE déplace réellement le séparateur à chaque frappe (le dessin
-;     suit la saisie, comme avant) ;
-;   - une FORMULE se contente d'afficher la bulle de traduction (valeurs
-;     courantes + résultat) SANS déplacer le séparateur : la formule change de
-;     forme à chaque caractère tapé (référence incomplète, opérateur en
-;     attente d'opérande…), et la re-déplacer/recalculer les sous-zones à
-;     CHAQUE frappe produisait un aller-retour de position parasite (le
-;     séparateur pouvait se retrouver clampé plus loin que ce que la formule
-;     affichait, cf. Metier_MoveSeparator) — visible à l'utilisateur comme une
-;     bulle "glitchée" pendant l'édition. Le déplacement effectif d'une
-;     formule n'a lieu qu'à la validation (Entrée / perte de focus, cf.
-;     UI_ApplySeparatorPosition) — même règle, désormais, que pour un
-;     séparateur déjà piloté en cours de ré-édition.
+; Aperçu en direct du champ Position (nombre OU formule) : le dessin suit la
+; saisie à chaque frappe, formule ou pas.
+;   - un NOMBRE déplace réellement le séparateur — en LIBÉRANT d'abord une
+;     éventuelle formule (même règle qu'à la validation, cf.
+;     UI_ApplySeparatorPosition) : un séparateur piloté suit donc lui aussi la
+;     frappe, au lieu d'attendre Entrée/perte de focus ;
+;   - une FORMULE VALIDE est appliquée immédiatement (Metier_SetSeparatorFormula :
+;     le séparateur devient piloté et se déplace en direct), avec la bulle de
+;     traduction (valeurs courantes + résultat). Pendant la frappe la formule
+;     change de forme à chaque caractère (référence incomplète, opérateur en
+;     attente d'opérande…) : tant qu'elle est INVALIDE, rien n'est appliqué —
+;     le séparateur garde sa position (et sa dernière formule appliquée).
+;     Le résultat affiché par la bulle est le calcul BRUT : la position réelle
+;     peut différer (clamp métier — écart 10 mm, sous-zone), elle reste
+;     visible dans "Pos. effective".
 Func Input_PreviewSepPos()
 	Local $sInput = StringStripWS(GUICtrlRead($g_idUiSepPosInput), 3)
 	If $sInput = "" Or Not Selection_HasSelection() Then
@@ -407,16 +408,14 @@ Func Input_PreviewSepPos()
 	Local $iId = Selection_GetId()
 	Local $iRow = Project_SepFindById($iId)
 	If $iRow = -1 Then Return
-	Local $bPiloted = (Project_SepGet($iRow, $SEP_FORMULA) <> "")
 
 	If StringRegExp($sInput, "^[-+]?[0-9]+([\.,][0-9]+)?$") Then
 		UI_FormulaTipHide()
-		If Not $bPiloted Then
-			Undo_CaptureIfArmed()
-			If Metier_MoveSeparator($iId, Number(StringReplace($sInput, ",", "."))) Then
-				UI_RefreshSeparatorDerived()
-				App_InvalidateView()
-			EndIf
+		Undo_CaptureIfArmed()
+		If Project_SepGet($iRow, $SEP_FORMULA) <> "" Then Metier_SetSeparatorFormula($iId, "")
+		If Metier_MoveSeparator($iId, Number(StringReplace($sInput, ",", "."))) Then
+			UI_RefreshSeparatorDerived()
+			App_InvalidateView()
 		EndIf
 		Return
 	EndIf
@@ -427,6 +426,13 @@ Func Input_PreviewSepPos()
 		UI_FormulaTipHide()
 		Return
 	EndIf
+
+	; Formule valide : appliquée EN DIRECT — même mutation qu'à la validation
+	; (la validation ne fera que la re-poser à l'identique, sans effet).
+	Undo_CaptureIfArmed()
+	Metier_SetSeparatorFormula($iId, $sInput)
+	UI_RefreshSeparatorDerived()
+	App_InvalidateView()
 
 	If Zones_FormulaHasVariable($sInput) Then
 		Local $sTranslated, $fPreview
@@ -588,7 +594,33 @@ Func Input_AdjustFieldAtCursor($bIncrement)
 		If $iN < 1 Then $iN = 1
 		$sReplacement = String($iN)
 	Else
-		$sReplacement = UI_FmtMm(Number($sValue) + ($bIncrement ? 1 : -1))
+		; Jeton "num" collé à un opérateur +/- précédent sans espace (ex.
+		; "100-1") : il ne porte que sa MAGNITUDE (cf. Input_FindTokenAtCursor,
+		; le signe reste à l'opérateur — ambiguïté avec l'opérateur binaire).
+		; La contribution réelle du terme est donc (magnitude × signe de
+		; l'opérateur). Pour que UP/DOWN fasse toujours varier le RÉSULTAT de
+		; +1/-1 (et pas juste le chiffre affiché), on inverse le pas appliqué
+		; à la magnitude quand le terme est soustrait — sinon DOWN sur
+		; "100-1" affichait "100-0" (résultat 100, en hausse) au lieu de
+		; "100-2" (résultat 98, en baisse).
+		Local $sPrevChar = ($iStart > 0) ? StringMid($sText, $iStart, 1) : ""
+		Local $bGluedOp = ($sPrevChar = "+" Or $sPrevChar = "-")
+		Local $iSignOp = ($bGluedOp And $sPrevChar = "-") ? -1 : 1
+		Local $iStep = ($bIncrement ? 1 : -1) * $iSignOp
+		$sReplacement = UI_FmtMm(Number($sValue) + $iStep)
+
+		; Si la nouvelle magnitude est négative, on fusionne son signe avec
+		; l'opérateur collé au lieu de les juxtaposer ("10+1" -> "10-1",
+		; jamais "10+-1" ; un pas de plus redonne "10+1", jamais "10--1").
+		If $bGluedOp Then
+			Local $bNeg = (StringLeft($sReplacement, 1) = "-")
+			If $bNeg Then $sReplacement = StringTrimLeft($sReplacement, 1)
+			Local $sNewOp = "+"
+			If ($sPrevChar = "-") And Not $bNeg Then $sNewOp = "-"
+			If ($sPrevChar = "+") And $bNeg Then $sNewOp = "-"
+			$iStart -= 1
+			$sReplacement = $sNewOp & $sReplacement
+		EndIf
 	EndIf
 
 	Local $sNewText = StringLeft($sText, $iStart) & $sReplacement & StringMid($sText, $iEnd + 1)

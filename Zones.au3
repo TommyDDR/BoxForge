@@ -587,7 +587,8 @@ EndFunc   ;==>Zones_FormulaIsLinearVar
 ; VAR est conservé). Toute formule plus complexe reste verrouillée
 ; (comportement inchangé pour ces cas). La saisie directe d'un nombre dans le
 ; champ Position continue, elle, de LIBÉRER la formule (cf.
-; UI_ApplySeparatorPosition) — comportement distinct, volontairement inchangé.
+; UI_ApplySeparatorPosition et Input_PreviewSepPos) — comportement distinct,
+; volontairement inchangé.
 ; -----------------------------------------------------------------------------
 Func Metier_DragSeparator($iId, $fTarget)
 	Local $iRow = Project_SepFindById($iId)

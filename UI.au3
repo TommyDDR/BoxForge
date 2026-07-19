@@ -728,9 +728,10 @@ Func UI_ApplySeparatorPosition()
 	Local $iId = Selection_GetId()
 	Local $sInput = StringStripWS(GUICtrlRead($g_idUiSepPosInput), 3)
 
-	; État d'avant-frappe — une seule fois par session (cf. Undo_Arm). Pour
-	; une FORMULE, c'est ICI (et pas dans l'aperçu en direct) que la première
-	; mutation effective a lieu (cf. Input_PreviewSepPos).
+	; État d'avant-frappe — une seule fois par session (cf. Undo_Arm). En
+	; général déjà capturé par l'aperçu en direct (cf. Input_PreviewSepPos) ;
+	; reste utile quand la saisie n'a jamais été applicable pendant la frappe
+	; (formule restée invalide jusqu'à la validation, par exemple).
 	Undo_CaptureIfArmed()
 
 	If StringRegExp($sInput, "^[-+]?[0-9]+([\.,][0-9]+)?$") Then

@@ -29,7 +29,7 @@
 ; n'est PAS consommé tant que l'intervalle n'est pas écoulé : la dernière
 ; position atteinte est donc toujours rendue, juste pas plus souvent que
 ; nécessaire à l'oeil.
-Global Const $MAIN_FRAME_MIN_MS = 15
+Global Const $MAIN_FRAME_MIN_MS = 2
 
 Main()
 
