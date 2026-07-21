@@ -590,12 +590,13 @@ Func Input_FindTokenAtCursor($sText, $iCaret, ByRef $iStart, ByRef $iEnd, ByRef 
 EndFunc   ;==>Input_FindTokenAtCursor
 
 ; -----------------------------------------------------------------------------
-; Haut/Bas dans un champ suivi : incrémente/décrémente (pas = 1 mm) le nombre
-; sous le curseur, ou l'index N d'un jeton "sN.pos" (s1 → s2 → s3…, borné à 1
-; au minimum). Réutilise le pipeline d'aperçu existant (Box/Layer/Position, y
-; compris la bulle de formule) — même effet qu'une frappe au clavier.
+; Haut/Bas dans un champ suivi : incrémente/décrémente (pas = 1 mm, ou 10 mm
+; avec SHIFT — cf. $g_idUiAccelShiftUp/Down) le nombre sous le curseur, ou
+; l'index N d'un jeton "sN.pos" (s1 → s2 → s3…, borné à 1 au minimum).
+; Réutilise le pipeline d'aperçu existant (Box/Layer/Position, y compris la
+; bulle de formule) — même effet qu'une frappe au clavier.
 ; -----------------------------------------------------------------------------
-Func Input_AdjustFieldAtCursor($bIncrement)
+Func Input_AdjustFieldAtCursor($bIncrement, $iStepMag = 1)
 	If $g_iInpFocusedField = 0 Then Return
 	Local $hEdit = GUICtrlGetHandle($g_iInpFocusedField)
 	Local $sText = GUICtrlRead($g_iInpFocusedField)
@@ -606,7 +607,7 @@ Func Input_AdjustFieldAtCursor($bIncrement)
 
 	Local $sReplacement
 	If $sKind = "var" Then
-		Local $iN = Int(Number($sValue)) + ($bIncrement ? 1 : -1)
+		Local $iN = Int(Number($sValue)) + ($bIncrement ? $iStepMag : -$iStepMag)
 		If $iN < 1 Then $iN = 1
 		$sReplacement = String($iN)
 	Else
@@ -622,7 +623,7 @@ Func Input_AdjustFieldAtCursor($bIncrement)
 		Local $sPrevChar = ($iStart > 0) ? StringMid($sText, $iStart, 1) : ""
 		Local $bGluedOp = ($sPrevChar = "+" Or $sPrevChar = "-")
 		Local $iSignOp = ($bGluedOp And $sPrevChar = "-") ? -1 : 1
-		Local $iStep = ($bIncrement ? 1 : -1) * $iSignOp
+		Local $iStep = ($bIncrement ? $iStepMag : -$iStepMag) * $iSignOp
 		$sReplacement = UI_FmtMm(Number($sValue) + $iStep)
 
 		; Si la nouvelle magnitude est négative, on fusionne son signe avec

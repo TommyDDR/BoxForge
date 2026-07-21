@@ -156,6 +156,8 @@ Global $g_bUiQuitRequested = False
 ; fois pour toutes.
 Global $g_idUiAccelUp   = 0
 Global $g_idUiAccelDown = 0
+Global $g_idUiAccelShiftUp   = 0
+Global $g_idUiAccelShiftDown = 0
 Global $g_bUiUpDownAccelActive = False
 
 ; -----------------------------------------------------------------------------
@@ -241,6 +243,8 @@ Func UI_CreateMenus()
 	; est la GUI active, comme le reste de ce menu.
 	$g_idUiAccelUp = GUICtrlCreateDummy()
 	$g_idUiAccelDown = GUICtrlCreateDummy()
+	$g_idUiAccelShiftUp = GUICtrlCreateDummy()
+	$g_idUiAccelShiftDown = GUICtrlCreateDummy()
 
 	UI_RebuildAccelerators()
 EndFunc   ;==>UI_CreateMenus
@@ -262,7 +266,7 @@ Func UI_RebuildAccelerators()
 		Return
 	EndIf
 
-	Local $aAccel[9][2]
+	Local $aAccel[11][2]
 	For $i = 0 To 6
 		$aAccel[$i][0] = $aBase[$i][0]
 		$aAccel[$i][1] = $aBase[$i][1]
@@ -271,6 +275,10 @@ Func UI_RebuildAccelerators()
 	$aAccel[7][1] = $g_idUiAccelUp
 	$aAccel[8][0] = "{DOWN}"
 	$aAccel[8][1] = $g_idUiAccelDown
+	$aAccel[9][0] = "+{UP}"
+	$aAccel[9][1] = $g_idUiAccelShiftUp
+	$aAccel[10][0] = "+{DOWN}"
+	$aAccel[10][1] = $g_idUiAccelShiftDown
 	GUISetAccelerators($aAccel, $g_hUiMainGui)
 EndFunc   ;==>UI_RebuildAccelerators
 
@@ -1144,6 +1152,12 @@ Func UI_HandleGuiEvent($iMsg)
 			Return True
 		Case $g_idUiAccelDown
 			Input_AdjustFieldAtCursor(False)
+			Return True
+		Case $g_idUiAccelShiftUp
+			Input_AdjustFieldAtCursor(True, 10)
+			Return True
+		Case $g_idUiAccelShiftDown
+			Input_AdjustFieldAtCursor(False, 10)
 			Return True
 	EndSwitch
 
