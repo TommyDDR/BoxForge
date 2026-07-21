@@ -116,6 +116,7 @@ Func Input_Init()
 	GUIRegisterMsg($WM_MOUSEMOVE, "Input_OnMouseMove")
 	GUIRegisterMsg($WM_LBUTTONDOWN, "Input_OnLButtonDown")
 	GUIRegisterMsg($WM_LBUTTONUP, "Input_OnLButtonUp")
+	GUIRegisterMsg($WM_LBUTTONDBLCLK, "Input_OnLButtonDblClk")
 	GUIRegisterMsg($WM_RBUTTONDOWN, "Input_OnRButtonDown")
 	GUIRegisterMsg($WM_COMMAND, "Input_OnCommand")
 
@@ -649,6 +650,39 @@ Func Input_AdjustFieldAtCursor($bIncrement)
 	Input_OnFieldChanged($g_iInpFocusedField)
 EndFunc   ;==>Input_AdjustFieldAtCursor
 
+; Sous une saisie utilisateur active (cf. Input_IsActiveFieldEditing) : insère
+; dans le champ suivi la référence pointée par $lParam (séparateur "sN.pos",
+; coin "b.", bord "b.l"/"b.w"). Retourne True si un jeton a été inséré (le
+; point d'appel doit alors court-circuiter son propre traitement) ; False si
+; le clic ne touche rien de référençable (le point d'appel retombe sur son
+; comportement normal). Partagé entre le simple et le double clic.
+Func Input_TryInsertFieldReference($lParam)
+	Local $fWxRef = Camera_ScreenToWorldX(Input_LoWordSigned($lParam))
+	Local $fWyRef = Camera_ScreenToWorldY(Input_HiWordSigned($lParam))
+	Local $iRefId = Selection_HitTest($fWxRef, $fWyRef, Input_PickTolMm())
+	If $iRefId <> -1 Then
+		Input_InsertFieldToken("s" & $iRefId & ".pos")
+		Return True
+	EndIf
+
+	Local $iRefEdgeX, $iRefEdgeY
+	Local $iRefHits = Input_HitBoxEdges($fWxRef, $fWyRef, $iRefEdgeX, $iRefEdgeY)
+	If $iRefHits = 2 Then
+		; Coin : comportement inchangé, l'utilisateur complète (w/l/h/t).
+		Input_InsertFieldToken("b.")
+		Return True
+	ElseIf $iRefEdgeX <> -1 Then
+		; Bord Ouest/Est seul : il court le long de l'axe Y → la longueur.
+		Input_InsertFieldToken("b.l")
+		Return True
+	ElseIf $iRefEdgeY <> -1 Then
+		; Bord Nord/Sud seul : il court le long de l'axe X → la largeur.
+		Input_InsertFieldToken("b.w")
+		Return True
+	EndIf
+	Return False
+EndFunc   ;==>Input_TryInsertFieldReference
+
 ; -----------------------------------------------------------------------------
 ; Clic gauche dans le canvas :
 ;   - sur un séparateur → sélection (le groupe entier suit) ;
@@ -670,29 +704,7 @@ Func Input_OnLButtonDown($hWnd, $iMsg, $wParam, $lParam)
 	; comportement normal ci-dessous, qui fait perdre le focus au champ et
 	; termine donc la saisie (cf. Input_CommitField sur EN_KILLFOCUS).
 	If Input_IsActiveFieldEditing() Then
-		Local $fWxRef = Camera_ScreenToWorldX(Input_LoWordSigned($lParam))
-		Local $fWyRef = Camera_ScreenToWorldY(Input_HiWordSigned($lParam))
-		Local $iRefId = Selection_HitTest($fWxRef, $fWyRef, Input_PickTolMm())
-		If $iRefId <> -1 Then
-			Input_InsertFieldToken("s" & $iRefId & ".pos")
-			Return 0
-		Else
-			Local $iRefEdgeX, $iRefEdgeY
-			Local $iRefHits = Input_HitBoxEdges($fWxRef, $fWyRef, $iRefEdgeX, $iRefEdgeY)
-			If $iRefHits = 2 Then
-				; Coin : comportement inchangé, l'utilisateur complète (w/l/h/t).
-				Input_InsertFieldToken("b.")
-				Return 0
-			ElseIf $iRefEdgeX <> -1 Then
-				; Bord Ouest/Est seul : il court le long de l'axe Y → la longueur.
-				Input_InsertFieldToken("b.l")
-				Return 0
-			ElseIf $iRefEdgeY <> -1 Then
-				; Bord Nord/Sud seul : il court le long de l'axe X → la largeur.
-				Input_InsertFieldToken("b.w")
-				Return 0
-			EndIf
-		EndIf
+		If Input_TryInsertFieldReference($lParam) Then Return 0
 	EndIf
 
 	; Réclame le focus clavier : sans ça, le focus reste bloqué sur le dernier
@@ -785,6 +797,57 @@ Func Input_OnLButtonUp($hWnd, $iMsg, $wParam, $lParam)
 	_WinAPI_ReleaseCapture()
 	Return 0
 EndFunc   ;==>Input_OnLButtonUp
+
+; -----------------------------------------------------------------------------
+; Double-clic gauche : édition rapide au clavier, sans passer par le panneau.
+;   - sur un séparateur → focus + sélection totale du champ Position (le
+;     simple clic qui précède le double-clic l'a déjà sélectionné, cf.
+;     Input_OnLButtonDown — ici on ne fait qu'amener le focus clavier dessus) ;
+;   - sur un bord de la boîte → focus + sélection totale du champ Largeur
+;     (bords Ouest/Est) ou Longueur (bords Nord/Sud) ; un COIN (les deux bords
+;     à la fois) édite la Largeur — choix arbitraire, l'autre axe n'est qu'un
+;     Tab plus loin une fois le focus posé.
+; Pendant une saisie utilisateur active (cf. Input_IsActiveFieldEditing), le
+; double-clic se comporte comme le simple clic : insertion de référence, sans
+; changer le champ ayant le focus (cf. Input_TryInsertFieldReference).
+; -----------------------------------------------------------------------------
+Func Input_OnLButtonDblClk($hWnd, $iMsg, $wParam, $lParam)
+	#forceref $iMsg, $wParam
+	If $hWnd <> UI_GetCanvasHwnd() Then Return $GUI_RUNDEFMSG
+
+	If Input_IsActiveFieldEditing() Then
+		Input_TryInsertFieldReference($lParam)
+		Return 0
+	EndIf
+
+	Local $fWx = Camera_ScreenToWorldX(Input_LoWordSigned($lParam))
+	Local $fWy = Camera_ScreenToWorldY(Input_HiWordSigned($lParam))
+
+	Local $iId = Selection_HitTest($fWx, $fWy, Input_PickTolMm())
+	If $iId <> -1 Then
+		Input_ApplySelection($iId)
+		Input_FocusFieldSelectAll($g_idUiSepPosInput)
+		Return 0
+	EndIf
+
+	Local $iEdgeX, $iEdgeY
+	If Input_HitBoxEdges($fWx, $fWy, $iEdgeX, $iEdgeY) > 0 Then
+		; Bord seul → le champ de l'axe qu'il borne ; coin (les deux à la fois,
+		; $iEdgeX renseigné aussi) → Largeur par défaut.
+		Local $iBoxField = ($iEdgeX = -1 And $iEdgeY <> -1) ? $BOX_LENGTH : $BOX_WIDTH
+		Input_FocusFieldSelectAll($g_aidUiBoxInputs[$iBoxField])
+	EndIf
+	Return 0
+EndFunc   ;==>Input_OnLButtonDblClk
+
+; Donne le focus clavier à un champ suivi et sélectionne tout son contenu —
+; même geste que la navigation Tab (cf. Input_FocusNextField) : prêt à
+; retaper une valeur immédiatement après le double-clic.
+Func Input_FocusFieldSelectAll($iCtrlId)
+	Local $hCtrl = GUICtrlGetHandle($iCtrlId)
+	_WinAPI_SetFocus($hCtrl)
+	_GUICtrlEdit_SetSel($hCtrl, 0, -1)
+EndFunc   ;==>Input_FocusFieldSelectAll
 
 ; -----------------------------------------------------------------------------
 ; Clic droit : sélection uniquement (cahier des charges) — jamais de création.
