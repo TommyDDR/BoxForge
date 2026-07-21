@@ -30,6 +30,13 @@ Global $g_iSetZoneLabelMode   = 1 ; $APP_ZONELABEL_HOVER (App.au3) — valeur du
 ; (cf. ProjectIO.au3). 1 = $SEP_ORIENT_H (Box.au3) — valeur dupliquée pour ne
 ; pas créer de dépendance.
 Global $g_iSetMainSepOrient   = 1
+; Mêmes réglages "menu uniquement" que $g_iSetMainSepOrient ci-dessus (valeurs
+; dupliquées pour ne pas créer de dépendance vers Box.au3) : dernier choix
+; repris par un NOUVEAU projet — un projet OUVERT garde sa propre valeur,
+; lue depuis le fichier .bfp (cf. ProjectIO.au3).
+Global $g_bSetGenerateStructure = True
+Global $g_bSetShowDxfLabels     = True
+Global $g_bSetShowSepTooltips   = False
 
 ; -----------------------------------------------------------------------------
 ; Charge les réglages depuis le fichier (silencieux si absent : valeurs par
@@ -48,6 +55,10 @@ Func Settings_Load()
 
 	Local $iMainSep = Int(Number(IniRead($SET_PATH, "View", "MainSepOrient", 1)))
 	$g_iSetMainSepOrient = ($iMainSep = 0 Or $iMainSep = 1) ? $iMainSep : 1
+
+	$g_bSetGenerateStructure = (IniRead($SET_PATH, "View", "GenerateStructure", "1") = "1")
+	$g_bSetShowDxfLabels = (IniRead($SET_PATH, "View", "ShowDxfLabels", "1") = "1")
+	$g_bSetShowSepTooltips = (IniRead($SET_PATH, "View", "ShowSepTooltips", "0") = "1")
 EndFunc   ;==>Settings_Load
 
 ; --- Accès à la position/taille fenêtre sauvegardées -------------------------
@@ -75,10 +86,23 @@ Func Settings_GetMainSepOrient()
 	Return $g_iSetMainSepOrient
 EndFunc   ;==>Settings_GetMainSepOrient
 
+Func Settings_GetGenerateStructure()
+	Return $g_bSetGenerateStructure
+EndFunc   ;==>Settings_GetGenerateStructure
+
+Func Settings_GetShowDxfLabels()
+	Return $g_bSetShowDxfLabels
+EndFunc   ;==>Settings_GetShowDxfLabels
+
+Func Settings_GetShowSepTooltips()
+	Return $g_bSetShowSepTooltips
+EndFunc   ;==>Settings_GetShowSepTooltips
+
 ; -----------------------------------------------------------------------------
 ; Sauvegarde l'état courant (écrasement complet, une seule passe).
 ; -----------------------------------------------------------------------------
-Func Settings_Save($iX, $iY, $iW, $iH, $bMaximized, $bLayerSimpleView, $iZoneLabelMode, $iMainSepOrient)
+Func Settings_Save($iX, $iY, $iW, $iH, $bMaximized, $bLayerSimpleView, $iZoneLabelMode, $iMainSepOrient, _
+		$bGenerateStructure, $bShowDxfLabels, $bShowSepTooltips)
 	If Not FileExists($SET_DIR) Then DirCreate($SET_DIR)
 
 	IniWrite($SET_PATH, "Window", "X", $iX)
@@ -90,4 +114,7 @@ Func Settings_Save($iX, $iY, $iW, $iH, $bMaximized, $bLayerSimpleView, $iZoneLab
 	IniWrite($SET_PATH, "View", "LayerSimpleView", $bLayerSimpleView ? "1" : "0")
 	IniWrite($SET_PATH, "View", "ZoneLabelMode", $iZoneLabelMode)
 	IniWrite($SET_PATH, "View", "MainSepOrient", $iMainSepOrient)
+	IniWrite($SET_PATH, "View", "GenerateStructure", $bGenerateStructure ? "1" : "0")
+	IniWrite($SET_PATH, "View", "ShowDxfLabels", $bShowDxfLabels ? "1" : "0")
+	IniWrite($SET_PATH, "View", "ShowSepTooltips", $bShowSepTooltips ? "1" : "0")
 EndFunc   ;==>Settings_Save

@@ -36,6 +36,10 @@ Global Const $RDR_COLOR_AXIS       = 0xFF3A4356 ; axes X=0 / Y=0
 Global Const $RDR_COLOR_WALL       = 0xFF4A4238 ; parois de la boîte (bois sombre)
 Global Const $RDR_COLOR_INTERIOR   = 0xFF23252B ; fond intérieur de la boîte
 Global Const $RDR_COLOR_BOX_LINE   = 0xFFA8865E ; contours de la boîte
+; Boîte de structure désactivée (cf. UI.au3, Génération > Boîte de structure) :
+; simple repère visuel, sans parois — fond gris et bordure 1px gris très clair.
+Global Const $RDR_COLOR_NOBOX_FILL   = 0xFF26282D
+Global Const $RDR_COLOR_NOBOX_BORDER = 0xFFC8CBD1
 
 ; Alpha plein appliqué aux couleurs de layer (stockées en 0xRRGGBB au modèle).
 Global Const $RDR_ALPHA_OPAQUE = 0xFF000000
@@ -72,6 +76,8 @@ Global $g_hRdrPenAxis       = 0
 Global $g_hRdrBrushWall     = 0
 Global $g_hRdrBrushInterior = 0
 Global $g_hRdrPenBoxLine    = 0
+Global $g_hRdrBrushNoBoxFill   = 0
+Global $g_hRdrPenNoBoxBorder   = 0
 
 ; Brush/pen RÉUTILISABLES pour les séparateurs : un seul couple d'objets dont
 ; la couleur est changée par SetSolidColor/SetColor (coût µs) — jamais de
@@ -179,6 +185,8 @@ Func Renderer_CreateSharedObjects()
 	$g_hRdrBrushWall = _GDIPlus_BrushCreateSolid($RDR_COLOR_WALL)
 	$g_hRdrBrushInterior = _GDIPlus_BrushCreateSolid($RDR_COLOR_INTERIOR)
 	$g_hRdrPenBoxLine = _GDIPlus_PenCreate($RDR_COLOR_BOX_LINE)
+	$g_hRdrBrushNoBoxFill = _GDIPlus_BrushCreateSolid($RDR_COLOR_NOBOX_FILL)
+	$g_hRdrPenNoBoxBorder = _GDIPlus_PenCreate($RDR_COLOR_NOBOX_BORDER)
 	$g_hRdrBrushSep = _GDIPlus_BrushCreateSolid(0xFF808080)
 	$g_hRdrPenSepEdge = _GDIPlus_PenCreate(0xFF404040)
 	$g_hRdrPenSelect = _GDIPlus_PenCreate($RDR_COLOR_SELECT, 2)
@@ -188,6 +196,14 @@ Func Renderer_CreateSharedObjects()
 EndFunc   ;==>Renderer_CreateSharedObjects
 
 Func Renderer_DisposeSharedObjects()
+	If $g_hRdrPenNoBoxBorder <> 0 Then
+		_GDIPlus_PenDispose($g_hRdrPenNoBoxBorder)
+		$g_hRdrPenNoBoxBorder = 0
+	EndIf
+	If $g_hRdrBrushNoBoxFill <> 0 Then
+		_GDIPlus_BrushDispose($g_hRdrBrushNoBoxFill)
+		$g_hRdrBrushNoBoxFill = 0
+	EndIf
 	If $g_hRdrBrushHover <> 0 Then
 		_GDIPlus_BrushDispose($g_hRdrBrushHover)
 		$g_hRdrBrushHover = 0
@@ -282,6 +298,7 @@ Func Renderer_Frame()
 	Renderer_DrawBox()
 	Renderer_DrawHoverZone()
 	Renderer_DrawSeparators()
+	Renderer_DrawSeparatorLabels()
 	Renderer_DrawZoneLabels()
 	Renderer_DrawHud()
 
@@ -370,7 +387,12 @@ EndFunc   ;==>Renderer_DrawWorldRect
 
 ; -----------------------------------------------------------------------------
 ; Boîte : parois pleines entre le rectangle extérieur et l'intérieur.
-; Le renderer ne fait que LIRE le modèle (aucune logique métier).
+; Le renderer ne fait que LIRE le modèle (aucune logique métier). Si l'option
+; "boîte de structure" est désactivée (Génération > Boîte de structure, cf.
+; UI.au3), il n'y a plus de parois à dessiner (épaisseur effective nulle,
+; extérieur == intérieur, cf. Box_EffectiveThickness/Project_BoxOuter) : la
+; boîte reste un simple repère visuel — fond gris et bordure 1px gris très
+; clair — pour que ses bords restent visibles/attrapables (redimensionnement).
 ; -----------------------------------------------------------------------------
 Func Renderer_DrawBox()
 	; Rectangles monde fournis par les données (l'origine peut être non nulle
@@ -378,6 +400,11 @@ Func Renderer_DrawBox()
 	Local $fOx1, $fOy1, $fOx2, $fOy2, $fIx1, $fIy1, $fIx2, $fIy2
 	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
 	Project_BoxInterior($fIx1, $fIy1, $fIx2, $fIy2)
+
+	If Not Project_BoxGet($BOX_GENERATE_STRUCTURE) Then
+		Renderer_DrawWorldRect($fOx1, $fOy1, $fOx2 - $fOx1, $fOy2 - $fOy1, $g_hRdrBrushNoBoxFill, $g_hRdrPenNoBoxBorder)
+		Return
+	EndIf
 
 	; Rectangle extérieur rempli (couleur parois) puis intérieur par-dessus :
 	; la bande restante visible EST la paroi, sans calcul de 4 rectangles.
@@ -430,6 +457,41 @@ Func Renderer_DrawSeparators()
 		EndIf
 	Next
 EndFunc   ;==>Renderer_DrawSeparators
+
+; -----------------------------------------------------------------------------
+; Nom de chaque séparateur ("sN"), affiché en permanence au centre de son
+; segment quand l'option est active (Affichage > Noms des séparateurs en
+; permanence, cf. UI.au3) — indépendant de la bulle de survol, qui reste
+; toujours active quel que soit ce réglage (cf. Input_OnMouseMove).
+; -----------------------------------------------------------------------------
+Func Renderer_DrawSeparatorLabels()
+	If Not Project_BoxGet($BOX_SHOW_SEP_TOOLTIPS) Then Return
+
+	For $i = 0 To Project_SepCount() - 1
+		Local $fThick = Project_LayerGet(Project_SepGet($i, $SEP_LAYER), $LAYER_THICKNESS)
+		Local $fPos = Project_SepGet($i, $SEP_POS)
+		Local $fS1 = Project_SepGet($i, $SEP_SPAN1)
+		Local $fS2 = Project_SepGet($i, $SEP_SPAN2)
+		If $fS2 - $fS1 <= 0 Then ContinueLoop
+
+		Local $iX0, $iX1, $iY0, $iY1
+		If Project_SepGet($i, $SEP_ORIENT) = $SEP_ORIENT_V Then
+			$iX0 = Camera_WorldToScreenX($fPos - $fThick / 2)
+			$iX1 = Camera_WorldToScreenX($fPos + $fThick / 2)
+			$iY0 = Camera_WorldToScreenY($fS2)
+			$iY1 = Camera_WorldToScreenY($fS1)
+		Else
+			$iX0 = Camera_WorldToScreenX($fS1)
+			$iX1 = Camera_WorldToScreenX($fS2)
+			$iY0 = Camera_WorldToScreenY($fPos + $fThick / 2)
+			$iY1 = Camera_WorldToScreenY($fPos - $fThick / 2)
+		EndIf
+
+		Local $sText = "s" & Project_SepGet($i, $SEP_ID)
+		Local $tLayout = _GDIPlus_RectFCreate($iX0, $iY0, $iX1 - $iX0, $iY1 - $iY0)
+		_GDIPlus_GraphicsDrawStringEx($g_hRdrGfx, $sText, $g_hRdrFontUi, $tLayout, $g_hRdrFormatCenter, $g_hRdrBrushText)
+	Next
+EndFunc   ;==>Renderer_DrawSeparatorLabels
 
 ; Format d'affichage d'une valeur en mm : 2 décimales max, sans zéros inutiles.
 ; Copie locale du pattern déjà dupliqué dans UI_FmtMm/_Zones_FmtToken : le

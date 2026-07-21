@@ -54,6 +54,9 @@ Func Main()
 	UI_SetLayerSimpleView(Settings_GetLayerSimpleView())
 	UI_SetZoneLabelMode(Settings_GetZoneLabelMode())
 	UI_SeedMainSepOrient(Settings_GetMainSepOrient())
+	UI_SeedGenerateStructure(Settings_GetGenerateStructure())
+	UI_SeedShowDxfLabels(Settings_GetShowDxfLabels())
+	UI_SeedShowSepTooltips(Settings_GetShowSepTooltips())
 	UI_ApplyLayout()
 
 	; Caméra : cadre la boîte dans le canvas.
@@ -67,12 +70,14 @@ Func Main()
 	Main_Loop()
 
 	; Sauvegarde de l'état courant (fenêtre, vue simplifiée, mode d'affichage
-	; des zones, dernier séparateur principal) pour la resynchroniser au
-	; prochain lancement.
+	; des zones, dernier séparateur principal, options de génération) pour la
+	; resynchroniser au prochain lancement.
 	Local $aPos = WinGetPos(UI_GetMainHwnd())
 	Local $bMaximizedNow = BitAND(WinGetState(UI_GetMainHwnd()), $WIN_STATE_MAXIMIZED) <> 0
 	Settings_Save($aPos[0], $aPos[1], $aPos[2], $aPos[3], $bMaximizedNow, _
-			UI_IsLayerSimpleView(), UI_GetZoneLabelMode(), Project_BoxGet($BOX_MAIN_SEP_ORIENT))
+			UI_IsLayerSimpleView(), UI_GetZoneLabelMode(), Project_BoxGet($BOX_MAIN_SEP_ORIENT), _
+			Project_BoxGet($BOX_GENERATE_STRUCTURE), Project_BoxGet($BOX_SHOW_DXF_LABELS), _
+			Project_BoxGet($BOX_SHOW_SEP_TOOLTIPS))
 
 	Input_Shutdown()
 	Renderer_Shutdown()

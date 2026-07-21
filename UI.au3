@@ -117,6 +117,9 @@ Global $g_idUiMenuLayerSimpleView = 0
 Global $g_idUiMenuDxf    = 0
 Global $g_idUiMenuMainSepH = 0 ; Génération > Séparateur principal > Horizontal
 Global $g_idUiMenuMainSepV = 0 ; Génération > Séparateur principal > Vertical
+Global $g_idUiMenuGenStructure = 0 ; Génération > Boîte de structure
+Global $g_idUiMenuDxfLabels    = 0 ; Génération > Noms des pièces dans le DXF
+Global $g_idUiMenuSepTooltips  = 0 ; Affichage > Noms des séparateurs en permanence
 Global $g_idUiMenuUndo = 0
 Global $g_idUiMenuRedo = 0
 
@@ -187,6 +190,10 @@ Func UI_Create()
 	GUISetState(@SW_SHOW, $g_hUiMainGui)
 
 	UI_RefreshMainSepOrientMenu()
+	UI_RefreshGenerateStructureMenu()
+	UI_RefreshShowDxfLabelsMenu()
+	UI_RefreshShowSepTooltipsMenu()
+	UI_RefreshStructureDependentFields()
 	UI_SetZoneLabelMode(App_GetZoneLabelMode()) ; synchronise la coche (Settings_Load peut la resurcharger ensuite)
 	UI_UpdateTitle()
 EndFunc   ;==>UI_Create
@@ -212,6 +219,7 @@ Func UI_CreateMenus()
 	Local $idMenuView = GUICtrlCreateMenu("&Affichage")
 	$g_idUiMenuFit = GUICtrlCreateMenuItem("Recentrer sur la boîte", $idMenuView)
 	$g_idUiMenuLayerSimpleView = GUICtrlCreateMenuItem("Layers : vue simplifiée", $idMenuView)
+	$g_idUiMenuSepTooltips = GUICtrlCreateMenuItem("Noms des séparateurs en permanence", $idMenuView)
 
 	Local $idMenuZoneLabel = GUICtrlCreateMenu("Taille des zones", $idMenuView)
 	$g_idUiMenuZoneNever = GUICtrlCreateMenuItem("Jamais", $idMenuZoneLabel)
@@ -220,6 +228,9 @@ Func UI_CreateMenus()
 
 	Local $idMenuGen = GUICtrlCreateMenu("&Génération")
 	$g_idUiMenuDxf = GUICtrlCreateMenuItem("Générer le DXF…" & @TAB & "Ctrl+G", $idMenuGen)
+	GUICtrlCreateMenuItem("", $idMenuGen) ; séparateur
+	$g_idUiMenuGenStructure = GUICtrlCreateMenuItem("Boîte de structure", $idMenuGen)
+	$g_idUiMenuDxfLabels = GUICtrlCreateMenuItem("Noms des pièces dans le DXF", $idMenuGen)
 
 	Local $idMenuMainSep = GUICtrlCreateMenu("Séparateur principal", $idMenuGen)
 	$g_idUiMenuMainSepH = GUICtrlCreateMenuItem("Horizontal", $idMenuMainSep)
@@ -413,6 +424,116 @@ Func UI_RefreshMainSepOrientMenu()
 EndFunc   ;==>UI_RefreshMainSepOrientMenu
 
 ; -----------------------------------------------------------------------------
+; Génération > Boîte de structure (cahier des charges) : réglage "menu
+; uniquement", persisté avec le projet ET comme dernier choix (mêmes règles
+; que le séparateur principal ci-dessus). Désactivée : le fond et les 4 côtés
+; ne sont plus générés/affichés (seuls les séparateurs le sont), les
+; extrémités de séparateur contre une paroi restent pleines (pas d'encoche de
+; fixation) et leurs créneaux traversants inférieurs disparaissent
+; (cf. DXF.au3) — les champs "créneau" de la boîte et du layer actif n'ont
+; alors plus d'effet et sont grisés (cf. UI_RefreshStructureDependentFields).
+; Bascule l'épaisseur EFFECTIVE (cf. Box_EffectiveThickness) entre sa valeur
+; réelle et 0 : Metier_OnBoxChanged reclampe séparateurs/formules et recalcule
+; les sous-zones ($g_aZones) sur ce nouvel intérieur — sans cet appel, zones
+; et séparateurs resteraient affichés avec l'ancien retrait tant qu'aucun
+; autre événement (redimensionnement, etc.) ne force un recalcul ; le fond
+; gris (cf. Renderer_DrawBox), lui, est recalculé à chaque frame et suit donc
+; immédiatement, mais doit rester visuellement cohérent avec les zones.
+; -----------------------------------------------------------------------------
+Func UI_SetGenerateStructure($bOn)
+	If Project_BoxGet($BOX_GENERATE_STRUCTURE) = $bOn Then Return
+	Undo_PushSnapshot()
+	If Not Project_BoxSet($BOX_GENERATE_STRUCTURE, $bOn) Then Return
+	Metier_OnBoxChanged() ; ré-ancre séparateurs/zones sur le nouvel intérieur (épaisseur effective)
+	UI_RefreshGenerateStructureMenu()
+	UI_RefreshStructureDependentFields()
+	UI_MarkProjectModified()
+	App_InvalidateView()
+EndFunc   ;==>UI_SetGenerateStructure
+
+Func UI_ToggleGenerateStructure()
+	UI_SetGenerateStructure(Not Project_BoxGet($BOX_GENERATE_STRUCTURE))
+EndFunc   ;==>UI_ToggleGenerateStructure
+
+; Sème un projet FRAÎCHEMENT créé avec le dernier choix (cf. UI_SeedMainSepOrient) —
+; pas une action de l'utilisateur sur CE projet, donc pas de modification signalée.
+Func UI_SeedGenerateStructure($bOn)
+	If Not Project_BoxSet($BOX_GENERATE_STRUCTURE, $bOn) Then Return
+	Metier_OnBoxChanged() ; cf. UI_SetGenerateStructure : zones/séparateurs sur le bon intérieur dès la création
+	UI_RefreshGenerateStructureMenu()
+	UI_RefreshStructureDependentFields()
+EndFunc   ;==>UI_SeedGenerateStructure
+
+Func UI_RefreshGenerateStructureMenu()
+	GUICtrlSetState($g_idUiMenuGenStructure, Project_BoxGet($BOX_GENERATE_STRUCTURE) ? $GUI_CHECKED : $GUI_UNCHECKED)
+EndFunc   ;==>UI_RefreshGenerateStructureMenu
+
+; Grise les champs "créneau" de la boîte et du layer actif quand la boîte de
+; structure est désactivée (plus aucun effet sur la génération, cf. ci-dessus).
+Func UI_RefreshStructureDependentFields()
+	Local $iState = Project_BoxGet($BOX_GENERATE_STRUCTURE) ? $GUI_ENABLE : $GUI_DISABLE
+	GUICtrlSetState($g_aidUiBoxInputs[$BOX_THICKNESS], $iState)
+	GUICtrlSetState($g_aidUiBoxInputs[$BOX_FINGER_LEN], $iState)
+	GUICtrlSetState($g_aidUiBoxInputs[$BOX_FINGER_SPACING], $iState)
+	GUICtrlSetState($g_aidUiLayerInputs[$LAYER_FINGER_LEN], $iState)
+	GUICtrlSetState($g_aidUiLayerInputs[$LAYER_FINGER_SPACING], $iState)
+EndFunc   ;==>UI_RefreshStructureDependentFields
+
+; -----------------------------------------------------------------------------
+; Génération > Noms des pièces dans le DXF (cahier des charges) : réglage
+; "menu uniquement", mêmes règles de persistance que ci-dessus. N'affecte que
+; l'export (cf. DXF.au3) — pas de rafraîchissement du canevas nécessaire.
+; -----------------------------------------------------------------------------
+Func UI_SetShowDxfLabels($bOn)
+	If Project_BoxGet($BOX_SHOW_DXF_LABELS) = $bOn Then Return
+	Undo_PushSnapshot()
+	If Not Project_BoxSet($BOX_SHOW_DXF_LABELS, $bOn) Then Return
+	UI_RefreshShowDxfLabelsMenu()
+	UI_MarkProjectModified()
+EndFunc   ;==>UI_SetShowDxfLabels
+
+Func UI_ToggleShowDxfLabels()
+	UI_SetShowDxfLabels(Not Project_BoxGet($BOX_SHOW_DXF_LABELS))
+EndFunc   ;==>UI_ToggleShowDxfLabels
+
+Func UI_SeedShowDxfLabels($bOn)
+	If Not Project_BoxSet($BOX_SHOW_DXF_LABELS, $bOn) Then Return
+	UI_RefreshShowDxfLabelsMenu()
+EndFunc   ;==>UI_SeedShowDxfLabels
+
+Func UI_RefreshShowDxfLabelsMenu()
+	GUICtrlSetState($g_idUiMenuDxfLabels, Project_BoxGet($BOX_SHOW_DXF_LABELS) ? $GUI_CHECKED : $GUI_UNCHECKED)
+EndFunc   ;==>UI_RefreshShowDxfLabelsMenu
+
+; -----------------------------------------------------------------------------
+; Affichage > Noms des séparateurs en permanence (cahier des charges) : réglage
+; "menu uniquement", mêmes règles de persistance que ci-dessus. Lu par
+; Renderer.au3 (cf. Renderer_DrawSeparatorLabels) ; la bulle de survol reste
+; toujours active quel que soit ce réglage (cf. Input_OnMouseMove).
+; -----------------------------------------------------------------------------
+Func UI_SetShowSepTooltips($bOn)
+	If Project_BoxGet($BOX_SHOW_SEP_TOOLTIPS) = $bOn Then Return
+	Undo_PushSnapshot()
+	If Not Project_BoxSet($BOX_SHOW_SEP_TOOLTIPS, $bOn) Then Return
+	UI_RefreshShowSepTooltipsMenu()
+	UI_MarkProjectModified()
+	App_InvalidateView()
+EndFunc   ;==>UI_SetShowSepTooltips
+
+Func UI_ToggleShowSepTooltips()
+	UI_SetShowSepTooltips(Not Project_BoxGet($BOX_SHOW_SEP_TOOLTIPS))
+EndFunc   ;==>UI_ToggleShowSepTooltips
+
+Func UI_SeedShowSepTooltips($bOn)
+	If Not Project_BoxSet($BOX_SHOW_SEP_TOOLTIPS, $bOn) Then Return
+	UI_RefreshShowSepTooltipsMenu()
+EndFunc   ;==>UI_SeedShowSepTooltips
+
+Func UI_RefreshShowSepTooltipsMenu()
+	GUICtrlSetState($g_idUiMenuSepTooltips, Project_BoxGet($BOX_SHOW_SEP_TOOLTIPS) ? $GUI_CHECKED : $GUI_UNCHECKED)
+EndFunc   ;==>UI_RefreshShowSepTooltipsMenu
+
+; -----------------------------------------------------------------------------
 ; Mode d'affichage de la taille des zones (Affichage > Taille des zones) :
 ; réglage "menu uniquement", persisté avec l'état fenêtre (cf. Settings.au3),
 ; PAS avec le projet (c'est une préférence d'affichage, pas une donnée
@@ -489,6 +610,10 @@ EndFunc   ;==>UI_FitCameraToBox
 Func UI_RefreshAllPanels()
 	UI_RefreshBoxInputs()
 	UI_RefreshMainSepOrientMenu()
+	UI_RefreshGenerateStructureMenu()
+	UI_RefreshShowDxfLabelsMenu()
+	UI_RefreshShowSepTooltipsMenu()
+	UI_RefreshStructureDependentFields()
 	UI_RefreshLayerInputs()
 	For $i = 0 To $LAYERS_COUNT - 1
 		UI_RefreshLayerRow($i)
@@ -535,7 +660,11 @@ Func UI_DoNew()
 	If Not UI_ConfirmDiscard() Then Return
 	Metier_NewProject()
 	ProjectIO_SetPath("")
-	UI_SeedMainSepOrient(Settings_GetMainSepOrient()) ; reprend le dernier choix, pas le défaut d'usine
+	; Reprend le dernier choix de l'utilisateur, pas le défaut d'usine.
+	UI_SeedMainSepOrient(Settings_GetMainSepOrient())
+	UI_SeedGenerateStructure(Settings_GetGenerateStructure())
+	UI_SeedShowDxfLabels(Settings_GetShowDxfLabels())
+	UI_SeedShowSepTooltips(Settings_GetShowSepTooltips())
 	UI_AfterProjectReplaced()
 EndFunc   ;==>UI_DoNew
 
@@ -805,9 +934,11 @@ Func UI_CreateBoxSection($iYStart)
 
 	Local $iY = $iYStart + 26
 	For $i = 0 To $BOX_FIELD_COUNT - 1
-		; Séparateur principal : réglage "menu uniquement" (cf. cahier des
-		; charges) — pas de champ dans ce panneau.
-		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop
+		; Séparateur principal / options de génération : réglages "menu
+		; uniquement" (cf. cahier des charges, UI_CreateMenus) — pas de champ
+		; dans ce panneau, accessibles uniquement depuis le menu du haut.
+		If $i = $BOX_MAIN_SEP_ORIENT Or $i = $BOX_GENERATE_STRUCTURE Or _
+				$i = $BOX_SHOW_DXF_LABELS Or $i = $BOX_SHOW_SEP_TOOLTIPS Then ContinueLoop
 		Local $idLabel = UI_Dock(GUICtrlCreateLabel($aLabels[$i], 12, $iY + 3, 136, 18))
 		GUICtrlSetColor($idLabel, $UI_COLOR_TEXT_DIM)
 		GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
@@ -903,7 +1034,8 @@ EndFunc   ;==>UI_FmtMm
 ; Recharge les champs depuis le modèle (source de vérité : le métier).
 Func UI_RefreshBoxInputs()
 	For $i = 0 To $BOX_FIELD_COUNT - 1
-		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop
+		If $i = $BOX_MAIN_SEP_ORIENT Or $i = $BOX_GENERATE_STRUCTURE Or _
+				$i = $BOX_SHOW_DXF_LABELS Or $i = $BOX_SHOW_SEP_TOOLTIPS Then ContinueLoop
 		GUICtrlSetData($g_aidUiBoxInputs[$i], UI_FmtMm(Project_BoxGet($i)))
 	Next
 EndFunc   ;==>UI_RefreshBoxInputs
@@ -914,7 +1046,8 @@ EndFunc   ;==>UI_RefreshBoxInputs
 ; nouvel intérieur et recalcule les sous-zones.
 Func UI_ApplyBoxInputs()
 	For $i = 0 To $BOX_FIELD_COUNT - 1
-		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop
+		If $i = $BOX_MAIN_SEP_ORIENT Or $i = $BOX_GENERATE_STRUCTURE Or _
+				$i = $BOX_SHOW_DXF_LABELS Or $i = $BOX_SHOW_SEP_TOOLTIPS Then ContinueLoop
 		Project_BoxSet($i, Number(GUICtrlRead($g_aidUiBoxInputs[$i])))
 	Next
 	Metier_OnBoxChanged()
@@ -957,6 +1090,9 @@ Func UI_HandleGuiEvent($iMsg)
 		Case $g_idUiMenuLayerSimpleView
 			UI_ToggleLayerSimpleView()
 			Return True
+		Case $g_idUiMenuSepTooltips
+			UI_ToggleShowSepTooltips()
+			Return True
 		Case $g_idUiMenuZoneNever
 			UI_SetZoneLabelMode($APP_ZONELABEL_NEVER)
 			Return True
@@ -974,6 +1110,12 @@ Func UI_HandleGuiEvent($iMsg)
 			Return True
 		Case $g_idUiMenuMainSepV
 			UI_SetMainSepOrient($SEP_ORIENT_V)
+			Return True
+		Case $g_idUiMenuGenStructure
+			UI_ToggleGenerateStructure()
+			Return True
+		Case $g_idUiMenuDxfLabels
+			UI_ToggleShowDxfLabels()
 			Return True
 		Case $g_idUiBtnApplyBox
 			UI_ApplyBoxInputs()

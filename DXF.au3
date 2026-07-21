@@ -12,10 +12,11 @@
 ; Structure (layer DXF "STRUCTURE") :
 ;   - fond : plaque pleine taille (Width × Length), encoches de pourtour pour
 ;     les tenons des côtés, trous pour les tenons des séparateurs ;
-;   - 4 côtés (hauteur = boîte) : coins à queues droites (les côtés N/S sont
-;     entaillés, les côtés E/O portent les languettes complémentaires),
-;     tenons inférieurs traversant le fond, encoches supérieures au droit de
-;     chaque séparateur qui rencontre le côté.
+;   - 4 côtés (hauteur = boîte) : coins en encoche mi-hauteur (mi-bois) — les
+;     côtés N/S sont entaillés sur une moitié de la hauteur, les côtés E/O
+;     portent la languette complémentaire sur cette même moitié (l'autre
+;     moitié fait l'inverse), tenons inférieurs traversant le fond (créneaux),
+;     encoches supérieures au droit de chaque séparateur qui rencontre le côté.
 ;
 ; Séparateurs (layers DXF "SEP_L00".."SEP_L29") :
 ;   - les segments ALIGNÉS d'un même groupe SHIFT sont fusionnés en UNE pièce
@@ -147,26 +148,26 @@ Func _DXF_PatternIntervals($fStart, $fEnd, $fLen, $fGap, $fMargin, ByRef $aOut)
 EndFunc   ;==>_DXF_PatternIntervals
 
 ; -----------------------------------------------------------------------------
-; Découpage des coins à queues droites : la hauteur des côtés est divisée en un
-; nombre IMPAIR de segments alternés (~ longueur de créneau de la boîte).
-; Segments pairs (0, 2, …) = matière des côtés N/S ; impairs = matière E/O.
-; Remplit $aOut[k][2] avec les intervalles IMPAIRS (utilisés en entaille sur
-; N/S et en languette sur E/O : mêmes intervalles, complémentarité garantie).
+; Découpage des coins par encoche mi-hauteur (mi-bois) : un seul intervalle,
+; sur la moitié haute ou basse de la hauteur des côtés (utilisé en entaille
+; sur N/S et en languette sur E/O : même intervalle, complémentarité garantie).
+; Le choix de la moitié suit la même logique de « séparateur principal » que
+; les croisements de séparateurs (cf. $BOX_MAIN_SEP_ORIENT et
+; _DXF_BuildNotches) : N/S est assimilé à l'orientation H, E/O à V ; la
+; moitié HAUTE est l'intervalle quand H est l'orientation principale (N/S
+; gardent alors leur matière en bas du coin, E/O en haut), la moitié BASSE
+; sinon (inverse).
 ; -----------------------------------------------------------------------------
-Func _DXF_CornerFingerIntervals($fHeight, $fFingerLen, ByRef $aOut)
-	Local $iN = Int($fHeight / $fFingerLen + 0.5)
-	If $iN < 3 Then $iN = 3
-	If Mod($iN, 2) = 0 Then $iN += 1
-	Local $fSeg = $fHeight / $iN
-
-	Local $iCount = Int(($iN - 1) / 2) ; segments impairs : 1, 3, …, n-2
-	ReDim $aOut[$iCount][2]
-	For $i = 0 To $iCount - 1
-		$aOut[$i][0] = (2 * $i + 1) * $fSeg
-		$aOut[$i][1] = $aOut[$i][0] + $fSeg
-	Next
-	Return $iCount
-EndFunc   ;==>_DXF_CornerFingerIntervals
+Func _DXF_CornerLapInterval($fHeight, ByRef $aOut)
+	ReDim $aOut[1][2]
+	If Project_BoxGet($BOX_MAIN_SEP_ORIENT) = $SEP_ORIENT_H Then
+		$aOut[0][0] = $fHeight / 2
+		$aOut[0][1] = $fHeight
+	Else
+		$aOut[0][0] = 0
+		$aOut[0][1] = $fHeight / 2
+	EndIf
+EndFunc   ;==>_DXF_CornerLapInterval
 
 ; =============================================================================
 ; CONSTRUCTION DES DONNÉES D'EXPORT (runs, encoches, tenons)
@@ -484,7 +485,10 @@ EndFunc   ;==>_DXF_Bounds
 
 ; Place une pièce (contour + trous éventuels + étiquette) et l'écrit.
 ; $aHoles : tableau de listes de points ? AutoIt ne le permet pas simplement —
-; les trous sont passés sous forme de rectangles [x0|y0|x1|y1].
+; les trous sont passés sous forme de rectangles [x0|y0|x1|y1]. L'étiquette de
+; repérage n'est écrite que si l'option est active (Génération > Noms des
+; pièces dans le DXF, cf. UI.au3) ; la réserve de mise en page inclut toujours
+; sa hauteur pour que la disposition des pièces reste identique dans les deux cas.
 Func _DXF_EmitPiece(ByRef $sOut, ByRef $aPts, ByRef $aHoleRects, $sLayer, $sLabel)
 	Local $fMinX, $fMinY, $fMaxX, $fMaxY
 	_DXF_Bounds($aPts, $fMinX, $fMinY, $fMaxX, $fMaxY)
@@ -503,7 +507,7 @@ Func _DXF_EmitPiece(ByRef $sOut, ByRef $aPts, ByRef $aHoleRects, $sLayer, $sLabe
 				[$aHoleRects[$i][0], $aHoleRects[$i][3]]]
 		_DXF_Polyline($sOut, $aHole, $sLayer, $fOffX, $fOffY)
 	Next
-	_DXF_Label($sOut, $sLabel, $fPlaceX + 2, $fPlaceY + ($fMaxY - $fMinY) + 3)
+	If Project_BoxGet($BOX_SHOW_DXF_LABELS) Then _DXF_Label($sOut, $sLabel, $fPlaceX + 2, $fPlaceY + ($fMaxY - $fMinY) + 3)
 EndFunc   ;==>_DXF_EmitPiece
 
 ; =============================================================================
@@ -544,14 +548,18 @@ EndFunc   ;==>_DXF_EmitTopFeatures
 ;   y = 0 (bas) .. hauteur du layer.
 ; Extrémité contre une paroi : prolongement d'une épaisseur de paroi avec
 ; encoche de fixation en bas (profondeur hauteur/2) → languette haute.
+; Si la boîte de structure est désactivée (cf. UI.au3), il n'y a plus de
+; paroi à rejoindre : ces extrémités restent pleines (pas de prolongement, pas
+; d'encoche de fixation), même quand le run touche géométriquement une paroi.
 ; -----------------------------------------------------------------------------
 Func _DXF_BuildSepPiece($iRun, ByRef $aPts)
+	Local $bStructure = Project_BoxGet($BOX_GENERATE_STRUCTURE)
 	Local $iLayer = $g_aDxfRuns[$iRun][$DXFRUN_LAYER]
 	Local $fH = Project_LayerGet($iLayer, $LAYER_HEIGHT)
 	Local $fT = Project_BoxGet($BOX_THICKNESS)      ; épaisseur parois/fond
 	Local $fStart = $g_aDxfRuns[$iRun][$DXFRUN_START]
-	Local $bW1 = $g_aDxfRuns[$iRun][$DXFRUN_WALL1]
-	Local $bW2 = $g_aDxfRuns[$iRun][$DXFRUN_WALL2]
+	Local $bW1 = $g_aDxfRuns[$iRun][$DXFRUN_WALL1] And $bStructure
+	Local $bW2 = $g_aDxfRuns[$iRun][$DXFRUN_WALL2] And $bStructure
 
 	Local $fXOff = ($bW1 ? $fT : 0) - $fStart ; monde → local
 	Local $fLp = ($g_aDxfRuns[$iRun][$DXFRUN_END] - $fStart) + ($bW1 ? $fT : 0) + ($bW2 ? $fT : 0)
@@ -631,8 +639,13 @@ EndFunc   ;==>_DXF_BuildSepPiece
 ; Pièce d'un côté. $bTabs : False = côtés N/S (entailles aux extrémités),
 ; True = côtés E/O (languettes complémentaires). $aSlots : encoches supérieures
 ; [s0|s1|prof] en coordonnées locales. $aTenons : tenons inférieurs [s0|s1].
+; $aCorner : encoche mi-hauteur du coin, UN SEUL intervalle [s0|s1] dont une
+; borne touche exactement 0 ou $fHs (cf. _DXF_CornerLapInterval). Cette
+; extrémité touchée est déjà au niveau décalé (pas de retour au niveau
+; nominal à cet endroit, sinon trait parasite) : les 4 coins de la pièce sont
+; donc calculés individuellement plutôt que par une boucle générique.
 ; -----------------------------------------------------------------------------
-Func _DXF_BuildSidePiece($fLen, $fHs, $fT, $fTFloor, $bTabs, ByRef $aFingers, ByRef $aSlots, ByRef $aTenons, ByRef $aPts)
+Func _DXF_BuildSidePiece($fLen, $fHs, $fT, $fTFloor, $bTabs, ByRef $aCorner, ByRef $aSlots, ByRef $aTenons, ByRef $aPts)
 	; Tenons → features du bord inférieur (excursion −épaisseur du fond).
 	Local $aFeat[UBound($aTenons)][3]
 	For $i = 0 To UBound($aTenons) - 1
@@ -645,28 +658,42 @@ Func _DXF_BuildSidePiece($fLen, $fHs, $fT, $fTFloor, $bTabs, ByRef $aFingers, By
 	; vers l'extérieur (E/O), toutes strictement entre bas et haut.
 	Local $fOff = $bTabs ? $fT : -$fT
 
+	Local $fNs0 = $aCorner[0][0], $fNs1 = $aCorner[0][1]
+	Local $bNotchBot = (Abs($fNs0) <= $DXF_EPS) ; sinon l'encoche touche le haut ($fNs1 = $fHs)
+
+	; Coins de la pièce : au niveau nominal (0 / $fLen), sauf à l'extrémité
+	; touchée par l'encoche où ils sont déjà au niveau décalé.
+	Local $fBLx = $bNotchBot ? -$fOff : 0
+	Local $fBRx = $bNotchBot ? $fLen + $fOff : $fLen
+	Local $fTLx = $bNotchBot ? 0 : -$fOff
+	Local $fTRx = $bNotchBot ? $fLen : $fLen + $fOff
+
 	_DXF_PtInit($aPts)
-	_DXF_PtAdd($aPts, 0, 0)
+	_DXF_PtAdd($aPts, $fBLx, 0)
 	_DXF_EmitBottomFeatures($aPts, $aFeat, $fLen)
-	_DXF_PtAdd($aPts, $fLen, 0)
-	; Bord droit (montant) : queues droites.
-	For $i = 0 To UBound($aFingers) - 1
-		_DXF_PtAdd($aPts, $fLen, $aFingers[$i][0])
-		_DXF_PtAdd($aPts, $fLen + $fOff, $aFingers[$i][0])
-		_DXF_PtAdd($aPts, $fLen + $fOff, $aFingers[$i][1])
-		_DXF_PtAdd($aPts, $fLen, $aFingers[$i][1])
-	Next
-	_DXF_PtAdd($aPts, $fLen, $fHs)
+	_DXF_PtAdd($aPts, $fBRx, 0)
+	; Bord droit (montant) : encoche mi-hauteur du coin.
+	If $bNotchBot Then
+		_DXF_PtAdd($aPts, $fBRx, $fNs1)
+		_DXF_PtAdd($aPts, $fLen, $fNs1)
+	Else
+		_DXF_PtAdd($aPts, $fLen, $fNs0)
+		_DXF_PtAdd($aPts, $fTRx, $fNs0)
+	EndIf
+	_DXF_PtAdd($aPts, $fTRx, $fHs)
 	; Bord supérieur (droite → gauche) : encoches des séparateurs.
 	_DXF_EmitTopFeatures($aPts, $aSlots, $fHs, $fLen)
-	_DXF_PtAdd($aPts, 0, $fHs)
-	; Bord gauche (descendant) : queues droites (miroir).
-	For $i = UBound($aFingers) - 1 To 0 Step -1
-		_DXF_PtAdd($aPts, 0, $aFingers[$i][1])
-		_DXF_PtAdd($aPts, -$fOff, $aFingers[$i][1])
-		_DXF_PtAdd($aPts, -$fOff, $aFingers[$i][0])
-		_DXF_PtAdd($aPts, 0, $aFingers[$i][0])
-	Next
+	_DXF_PtAdd($aPts, $fTLx, $fHs)
+	; Bord gauche (descendant) : encoche mi-hauteur du coin (miroir). La
+	; fermeture jusqu'au premier sommet ($fBLx, 0) est implicite (polyligne
+	; fermée) — aucun point à ajouter après.
+	If $bNotchBot Then
+		_DXF_PtAdd($aPts, 0, $fNs1)
+		_DXF_PtAdd($aPts, $fBLx, $fNs1)
+	Else
+		_DXF_PtAdd($aPts, $fTLx, $fNs0)
+		_DXF_PtAdd($aPts, 0, $fNs0)
+	EndIf
 EndFunc   ;==>_DXF_BuildSidePiece
 
 ; Encoches supérieures d'un côté : pour chaque run qui rencontre ce côté,
@@ -709,55 +736,67 @@ Func DXF_Export($sPath)
 	Local $fFl = Project_BoxGet($BOX_FINGER_LEN)
 	Local $fFs = Project_BoxGet($BOX_FINGER_SPACING)
 
+	; Boîte de structure (Génération > Boîte de structure, cf. UI.au3) : si
+	; désactivée, seuls les séparateurs sont générés (ni fond, ni côtés) et
+	; leurs créneaux traversants inférieurs disparaissent (plus de fond où les
+	; ancrer) — cf. _DXF_BuildSepPiece pour les extrémités contre une paroi.
+	Local $bStructure = Project_BoxGet($BOX_GENERATE_STRUCTURE)
+
 	; --- Données d'export (dérivées du modèle métier) ---
 	_DXF_BuildRuns()
 	_DXF_BuildNotches()
-	_DXF_BuildTenons()
+	If $bStructure Then
+		_DXF_BuildTenons()
+	Else
+		ReDim $g_aDxfTenons[0][$DXFT_FIELD_COUNT]
+	EndIf
 	_DXF_LayoutReset(_DXF_Max(1200, $fW + $fL + 2 * $DXF_GAP))
 
 	Local $sEnt = "" ; entités accumulées
-
-	; --- Motifs partagés structure : calculés UNE fois, utilisés par les côtés
-	;     ET par le pourtour du fond (correspondance garantie) ---
-	Local $aFingers[0][2] ; queues droites des coins (intervalles en hauteur)
-	_DXF_CornerFingerIntervals($fHs, $fFl, $aFingers)
-	Local $aTenNS[0][2] ; tenons des côtés N/S (s = X monde, longueur W)
-	_DXF_PatternIntervals($fT + $DXF_EDGE_MARGIN, $fW - $fT - $DXF_EDGE_MARGIN, $fFl, $fFs, 0, $aTenNS)
-	Local $aTenEW[0][2] ; tenons des côtés E/O (s local, longueur L−2t)
-	_DXF_PatternIntervals($DXF_EDGE_MARGIN, ($fL - 2 * $fT) - $DXF_EDGE_MARGIN, $fFl, $fFs, 0, $aTenEW)
-
-	; --- Fond : contour W×L avec encoches de pourtour + trous des séparateurs ---
 	Local $aPts[0][2]
-	_DXF_BuildFloorOutline($fW, $fL, $fT, $aTenNS, $aTenEW, $aPts)
-	Local $aHoles[0][4]
-	_DXF_FloorHoles($aHoles)
-	_DXF_EmitPiece($sEnt, $aPts, $aHoles, "STRUCTURE", "FOND")
+	Local $aNoHoles[0][4] ; réutilisé par les côtés (si présents) ET les séparateurs
 
-	; --- Côtés ---
-	Local $aNoHoles[0][4]
-	Local $aSlots[0][3]
+	If $bStructure Then
+		; --- Motifs partagés structure : calculés UNE fois, utilisés par les
+		;     côtés ET par le pourtour du fond (correspondance garantie) ---
+		Local $aCorner[0][2] ; encoche mi-hauteur des coins (intervalle en hauteur)
+		_DXF_CornerLapInterval($fHs, $aCorner)
+		Local $aTenNS[0][2] ; tenons des côtés N/S (s = X monde, longueur W)
+		_DXF_PatternIntervals($fT + $DXF_EDGE_MARGIN, $fW - $fT - $DXF_EDGE_MARGIN, $fFl, $fFs, 0, $aTenNS)
+		Local $aTenEW[0][2] ; tenons des côtés E/O (s local, longueur L−2t)
+		_DXF_PatternIntervals($DXF_EDGE_MARGIN, ($fL - 2 * $fT) - $DXF_EDGE_MARGIN, $fFl, $fFs, 0, $aTenEW)
 
-	; Nord (y fond = 0) : les séparateurs VERTICAUX dont la portée commence à
-	; la paroi nord ; s local = X fond (les runs sont dans le repère du fond).
-	_DXF_SideSlots($SEP_ORIENT_V, $DXFRUN_WALL1, 0, $fHs, $aSlots)
-	_DXF_BuildSidePiece($fW, $fHs, $fT, $fT, False, $aFingers, $aSlots, $aTenNS, $aPts)
-	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE NORD")
+		; --- Fond : contour W×L avec encoches de pourtour + trous des séparateurs ---
+		_DXF_BuildFloorOutline($fW, $fL, $fT, $aTenNS, $aTenEW, $aPts)
+		Local $aHoles[0][4]
+		_DXF_FloorHoles($aHoles)
+		_DXF_EmitPiece($sEnt, $aPts, $aHoles, "STRUCTURE", "FOND")
 
-	; Sud (y fond = L) : portée des verticaux finissant à la paroi sud.
-	_DXF_SideSlots($SEP_ORIENT_V, $DXFRUN_WALL2, 0, $fHs, $aSlots)
-	_DXF_BuildSidePiece($fW, $fHs, $fT, $fT, False, $aFingers, $aSlots, $aTenNS, $aPts)
-	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE SUD")
+		; --- Côtés ---
+		Local $aSlots[0][3]
 
-	; Ouest (x fond = 0) : horizontaux commençant à la paroi ouest ;
-	; s local = Y fond − épaisseur (le côté E/O court entre les côtés N/S).
-	_DXF_SideSlots($SEP_ORIENT_H, $DXFRUN_WALL1, -$fT, $fHs, $aSlots)
-	_DXF_BuildSidePiece($fL - 2 * $fT, $fHs, $fT, $fT, True, $aFingers, $aSlots, $aTenEW, $aPts)
-	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE OUEST")
+		; Nord (y fond = 0) : les séparateurs VERTICAUX dont la portée commence à
+		; la paroi nord ; s local = X fond (les runs sont dans le repère du fond).
+		_DXF_SideSlots($SEP_ORIENT_V, $DXFRUN_WALL1, 0, $fHs, $aSlots)
+		_DXF_BuildSidePiece($fW, $fHs, $fT, $fT, False, $aCorner, $aSlots, $aTenNS, $aPts)
+		_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE NORD")
 
-	; Est (x fond = W) : horizontaux finissant à la paroi est.
-	_DXF_SideSlots($SEP_ORIENT_H, $DXFRUN_WALL2, -$fT, $fHs, $aSlots)
-	_DXF_BuildSidePiece($fL - 2 * $fT, $fHs, $fT, $fT, True, $aFingers, $aSlots, $aTenEW, $aPts)
-	_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE EST")
+		; Sud (y fond = L) : portée des verticaux finissant à la paroi sud.
+		_DXF_SideSlots($SEP_ORIENT_V, $DXFRUN_WALL2, 0, $fHs, $aSlots)
+		_DXF_BuildSidePiece($fW, $fHs, $fT, $fT, False, $aCorner, $aSlots, $aTenNS, $aPts)
+		_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE SUD")
+
+		; Ouest (x fond = 0) : horizontaux commençant à la paroi ouest ;
+		; s local = Y fond − épaisseur (le côté E/O court entre les côtés N/S).
+		_DXF_SideSlots($SEP_ORIENT_H, $DXFRUN_WALL1, -$fT, $fHs, $aSlots)
+		_DXF_BuildSidePiece($fL - 2 * $fT, $fHs, $fT, $fT, True, $aCorner, $aSlots, $aTenEW, $aPts)
+		_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE OUEST")
+
+		; Est (x fond = W) : horizontaux finissant à la paroi est.
+		_DXF_SideSlots($SEP_ORIENT_H, $DXFRUN_WALL2, -$fT, $fHs, $aSlots)
+		_DXF_BuildSidePiece($fL - 2 * $fT, $fHs, $fT, $fT, True, $aCorner, $aSlots, $aTenEW, $aPts)
+		_DXF_EmitPiece($sEnt, $aPts, $aNoHoles, "STRUCTURE", "COTE EST")
+	EndIf
 
 	; --- Séparateurs (une pièce par run, sur le layer DXF de leur matière) ---
 	Local $aUsed[$LAYERS_COUNT] ; layers matière réellement utilisés (table DXF)

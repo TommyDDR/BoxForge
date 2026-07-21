@@ -73,6 +73,9 @@ Func ProjectIO_SaveTo($sPath)
 	$s &= "FingerLen=" & Project_BoxGet($BOX_FINGER_LEN) & @CRLF
 	$s &= "FingerSpacing=" & Project_BoxGet($BOX_FINGER_SPACING) & @CRLF
 	$s &= "MainSepOrient=" & Project_BoxGet($BOX_MAIN_SEP_ORIENT) & @CRLF
+	$s &= "GenerateStructure=" & (Project_BoxGet($BOX_GENERATE_STRUCTURE) ? 1 : 0) & @CRLF
+	$s &= "ShowDxfLabels=" & (Project_BoxGet($BOX_SHOW_DXF_LABELS) ? 1 : 0) & @CRLF
+	$s &= "ShowSepTooltips=" & (Project_BoxGet($BOX_SHOW_SEP_TOOLTIPS) ? 1 : 0) & @CRLF
 
 	; --- Layers (couleur en hexadécimal, dimensions en clair) ---
 	$s &= "[Layers]" & @CRLF
@@ -140,18 +143,31 @@ Func ProjectIO_LoadFrom($sPath)
 	$aBoxKeys[$BOX_FINGER_LEN] = "FingerLen"
 	$aBoxKeys[$BOX_FINGER_SPACING] = "FingerSpacing"
 	For $i = 0 To $BOX_FIELD_COUNT - 1
-		If $i = $BOX_MAIN_SEP_ORIENT Then ContinueLoop ; pas une dimension, cf. ci-dessous
+		If $i = $BOX_MAIN_SEP_ORIENT Or $i = $BOX_GENERATE_STRUCTURE Or $i = $BOX_SHOW_DXF_LABELS Or $i = $BOX_SHOW_SEP_TOOLTIPS Then ContinueLoop ; pas des dimensions, cf. ci-dessous
 		$aBox[$i] = _ProjectIO_ReadPositive($sPath, "Box", $aBoxKeys[$i])
 		If @error Then Return False
 	Next
 
-	; Séparateur principal : champ ajouté après coup — absent des projets plus
-	; anciens (0 étant une valeur légitime, non lisible par _ProjectIO_ReadPositive
-	; qui exige une valeur strictement positive). Repli sur la valeur par défaut
-	; si absente ou invalide : pas de bump de version nécessaire.
+	; Séparateur principal / options de génération : champs ajoutés après coup —
+	; absents des projets plus anciens (0 étant une valeur légitime, non lisible
+	; par _ProjectIO_ReadPositive qui exige une valeur strictement positive).
+	; Repli sur la valeur par défaut si absente ou invalide : pas de bump de
+	; version nécessaire.
 	$aBox[$BOX_MAIN_SEP_ORIENT] = Int(Number(IniRead($sPath, "Box", "MainSepOrient", $BOX_DEFAULT_MAIN_SEP_ORIENT)))
 	If Not Box_IsFieldValueValid($aBox, $BOX_MAIN_SEP_ORIENT, $aBox[$BOX_MAIN_SEP_ORIENT]) Then _
 			$aBox[$BOX_MAIN_SEP_ORIENT] = $BOX_DEFAULT_MAIN_SEP_ORIENT
+
+	$aBox[$BOX_GENERATE_STRUCTURE] = Int(Number(IniRead($sPath, "Box", "GenerateStructure", $BOX_DEFAULT_GENERATE_STRUCTURE)))
+	If Not Box_IsFieldValueValid($aBox, $BOX_GENERATE_STRUCTURE, $aBox[$BOX_GENERATE_STRUCTURE]) Then _
+			$aBox[$BOX_GENERATE_STRUCTURE] = $BOX_DEFAULT_GENERATE_STRUCTURE
+
+	$aBox[$BOX_SHOW_DXF_LABELS] = Int(Number(IniRead($sPath, "Box", "ShowDxfLabels", $BOX_DEFAULT_SHOW_DXF_LABELS)))
+	If Not Box_IsFieldValueValid($aBox, $BOX_SHOW_DXF_LABELS, $aBox[$BOX_SHOW_DXF_LABELS]) Then _
+			$aBox[$BOX_SHOW_DXF_LABELS] = $BOX_DEFAULT_SHOW_DXF_LABELS
+
+	$aBox[$BOX_SHOW_SEP_TOOLTIPS] = Int(Number(IniRead($sPath, "Box", "ShowSepTooltips", $BOX_DEFAULT_SHOW_SEP_TOOLTIPS)))
+	If Not Box_IsFieldValueValid($aBox, $BOX_SHOW_SEP_TOOLTIPS, $aBox[$BOX_SHOW_SEP_TOOLTIPS]) Then _
+			$aBox[$BOX_SHOW_SEP_TOOLTIPS] = $BOX_DEFAULT_SHOW_SEP_TOOLTIPS
 	; Cohérence minimale : un intérieur non vide doit exister.
 	Local $fMinDim = ($aBox[$BOX_WIDTH] < $aBox[$BOX_LENGTH]) ? $aBox[$BOX_WIDTH] : $aBox[$BOX_LENGTH]
 	If $aBox[$BOX_THICKNESS] * 2 >= $fMinDim Then Return False

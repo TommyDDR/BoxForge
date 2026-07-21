@@ -692,8 +692,9 @@ Func _Zones_FormulaEval($sFormula, ByRef $fOut)
 
 	; Variables de la boîte : dimensions INTÉRIEURES (voir en-tête).
 	; Les formes préfixées "b.x" sont substituées AVANT les formes nues
-	; (sinon \bw\b matcherait le w de "b.w").
-	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	; (sinon \bw\b matcherait le w de "b.w"). Épaisseur EFFECTIVE (cf.
+	; Box_EffectiveThickness) : nulle si la boîte de structure est désactivée.
+	Local $fT = Box_EffectiveThickness($g_aPrjBox)
 	Local $sW = StringFormat("%.6f", $g_aPrjBox[$BOX_WIDTH] - 2 * $fT)
 	Local $sL = StringFormat("%.6f", $g_aPrjBox[$BOX_LENGTH] - 2 * $fT)
 	Local $sH = StringFormat("%.6f", $g_aPrjBox[$BOX_HEIGHT] - $fT)
@@ -840,7 +841,7 @@ Func Zones_FormulaTranslate($sFormula, ByRef $sOut)
 				_Zones_FmtToken(Project_SepGet($iRow, $SEP_POS)))
 	Next
 
-	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	Local $fT = Box_EffectiveThickness($g_aPrjBox) ; épaisseur EFFECTIVE, cf. ci-dessus
 	Local $sW = _Zones_FmtToken($g_aPrjBox[$BOX_WIDTH] - 2 * $fT)
 	Local $sL = _Zones_FmtToken($g_aPrjBox[$BOX_LENGTH] - 2 * $fT)
 	Local $sH = _Zones_FmtToken($g_aPrjBox[$BOX_HEIGHT] - $fT)
@@ -1007,9 +1008,11 @@ Global Const $METIER_EDGE_S = 3
 ; -----------------------------------------------------------------------------
 Func Metier_ResizeBoxEdge($iEdge, $fWorldPos)
 	$fWorldPos = Round($fWorldPos, 2)
-	; Dimension minimale : les deux parois + une sous-zone exploitable.
-	Local $fMinDim = 2 * $g_aPrjBox[$BOX_THICKNESS] + 2 * $ZONES_MIN_GAP
-	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	; Épaisseur EFFECTIVE (cf. Box_EffectiveThickness) : nulle si la boîte de
+	; structure est désactivée — extérieur == intérieur (cf. Project_BoxOuter),
+	; donc pas de parois à réserver dans la dimension minimale.
+	Local $fT = Box_EffectiveThickness($g_aPrjBox)
+	Local $fMinDim = 2 * $fT + 2 * $ZONES_MIN_GAP
 	Local $fOx1, $fOy1, $fOx2, $fOy2 ; les bords dragués sont les bords EXTÉRIEURS
 	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
 

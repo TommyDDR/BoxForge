@@ -204,8 +204,14 @@ Func Input_HitBoxEdges($fWx, $fWy, ByRef $iEdgeX, ByRef $iEdgeY)
 
 	Local $fOx1, $fOy1, $fOx2, $fOy2
 	Project_BoxOuter($fOx1, $fOy1, $fOx2, $fOy2)
-	Local $fT = Project_BoxGet($BOX_THICKNESS)
 	Local $fTol = Input_PickTolMm()
+	; Bande de préhension d'un bord : l'épaisseur EFFECTIVE (cf.
+	; Box_EffectiveThickness) — nulle si la boîte de structure est désactivée,
+	; auquel cas extérieur == intérieur (Project_BoxOuter) — mais jamais sous
+	; la tolérance de visée, sans quoi un bord sans épaisseur ne serait plus
+	; attrapable qu'au pixel près.
+	Local $fT = Project_BoxGet($BOX_GENERATE_STRUCTURE) ? Project_BoxGet($BOX_THICKNESS) : 0
+	If $fT < $fTol Then $fT = $fTol
 
 	; Hors du voisinage de la boîte : rien.
 	If $fWx < $fOx1 - $fTol Or $fWx > $fOx2 + $fTol Then Return 0
@@ -256,6 +262,10 @@ EndFunc   ;==>Input_ApplySelection
 ; correspondant (box/layer), ou -1 pour le champ Position du séparateur.
 Func Input_FieldKind($iCtrlId, ByRef $iIndex)
 	For $i = 0 To $BOX_FIELD_COUNT - 1
+		; Réglages "menu uniquement" (cf. UI_CreateBoxSection) : pas de contrôle
+		; créé pour ces index, donc pas de champ suivi à reconnaître ici.
+		If $i = $BOX_MAIN_SEP_ORIENT Or $i = $BOX_GENERATE_STRUCTURE Or _
+				$i = $BOX_SHOW_DXF_LABELS Or $i = $BOX_SHOW_SEP_TOOLTIPS Then ContinueLoop
 		If $g_aidUiBoxInputs[$i] = $iCtrlId Then
 			$iIndex = $i
 			Return $INP_FIELD_BOX
@@ -451,10 +461,15 @@ EndFunc   ;==>Input_PreviewSepPos
 ; séparateur SI une sélection existe (section masquée sinon).
 ; -----------------------------------------------------------------------------
 Func Input_BuildTabOrder(ByRef $aOrder)
-	Local $iN = $BOX_FIELD_COUNT + ($LAYER_FIELD_COUNT - 1) + (Selection_HasSelection() ? 1 : 0)
+	; Champs Boîte réellement présents dans le panneau : $BOX_FIELD_COUNT moins
+	; les réglages "menu uniquement" (cf. UI_CreateBoxSection), sans contrôle créé.
+	Local $iBoxFields = $BOX_FIELD_COUNT - 4 ; MainSepOrient + les 3 nouvelles options
+	Local $iN = $iBoxFields + ($LAYER_FIELD_COUNT - 1) + (Selection_HasSelection() ? 1 : 0)
 	Local $a[$iN]
 	Local $k = 0
 	For $i = 0 To $BOX_FIELD_COUNT - 1
+		If $i = $BOX_MAIN_SEP_ORIENT Or $i = $BOX_GENERATE_STRUCTURE Or _
+				$i = $BOX_SHOW_DXF_LABELS Or $i = $BOX_SHOW_SEP_TOOLTIPS Then ContinueLoop
 		$a[$k] = $g_aidUiBoxInputs[$i]
 		$k += 1
 	Next

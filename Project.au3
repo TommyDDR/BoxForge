@@ -63,9 +63,11 @@ Func Project_BoxSetOrg($fX, $fY)
 EndFunc   ;==>Project_BoxSetOrg
 
 ; Rectangle extérieur de la boîte (monde, mm) : l'origine étant le coin
-; intérieur, l'extérieur déborde d'une épaisseur de chaque côté.
+; intérieur, l'extérieur déborde d'une épaisseur EFFECTIVE de chaque côté
+; (cf. Box_EffectiveThickness : nulle si la boîte de structure est
+; désactivée — pas de paroi physique, extérieur == intérieur).
 Func Project_BoxOuter(ByRef $fX1, ByRef $fY1, ByRef $fX2, ByRef $fY2)
-	Local $fT = $g_aPrjBox[$BOX_THICKNESS]
+	Local $fT = Box_EffectiveThickness($g_aPrjBox)
 	$fX1 = $g_fPrjBoxOrgX - $fT
 	$fY1 = $g_fPrjBoxOrgY - $fT
 	$fX2 = $fX1 + $g_aPrjBox[$BOX_WIDTH]
@@ -75,10 +77,11 @@ EndFunc   ;==>Project_BoxOuter
 ; Rectangle intérieur de la boîte (monde, mm) : là où vivent les sous-zones.
 ; Son coin bas-gauche EST l'origine de la boîte (0,0 hors drag de bord).
 Func Project_BoxInterior(ByRef $fX1, ByRef $fY1, ByRef $fX2, ByRef $fY2)
+	Local $fT = Box_EffectiveThickness($g_aPrjBox)
 	$fX1 = $g_fPrjBoxOrgX
 	$fY1 = $g_fPrjBoxOrgY
-	$fX2 = $g_fPrjBoxOrgX + $g_aPrjBox[$BOX_WIDTH] - 2 * $g_aPrjBox[$BOX_THICKNESS]
-	$fY2 = $g_fPrjBoxOrgY + $g_aPrjBox[$BOX_LENGTH] - 2 * $g_aPrjBox[$BOX_THICKNESS]
+	$fX2 = $g_fPrjBoxOrgX + $g_aPrjBox[$BOX_WIDTH] - 2 * $fT
+	$fY2 = $g_fPrjBoxOrgY + $g_aPrjBox[$BOX_LENGTH] - 2 * $fT
 EndFunc   ;==>Project_BoxInterior
 
 ; --- Accès à la boîte ---------------------------------------------------------
